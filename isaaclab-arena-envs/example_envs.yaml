@@ -1,0 +1,11 @@
+# Example environments avilable in IsaacLab Arena.
+# The key is the environment name as paseed in --env.environment, the value is the full module path to the environment class.
+
+repo:
+  base_module: isaaclab_arena.examples.example_environments
+  envs:
+    gr1_microwave: gr1_open_microwave_environment.Gr1OpenMicrowaveEnvironment
+    galileo_pnp: galileo_pick_and_place_environment.GalileoPickAndPlaceEnvironment
+    g1_locomanip_pnp: galileo_g1_locomanip_pick_and_place_environment.GalileoG1LocomanipPickAndPlaceEnvironment
+    kitchen_pnp: kitchen_pick_and_place_environment.KitchenPickAndPlaceEnvironment
+    press_button: press_button_environment.PressButtonEnvironment
