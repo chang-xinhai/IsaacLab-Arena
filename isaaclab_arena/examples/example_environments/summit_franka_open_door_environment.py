@@ -152,7 +152,7 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         #     robot_initial_pose = _compose(correction, raw_robot_pose)
         robot_initial_pose = Pose(
             position_xyz=(
-                object_pose.position_xyz[0] - 1.0,  # TODO: make this configurable
+                object_pose.position_xyz[0],  # TODO: make this configurable: -1.0
                 object_pose.position_xyz[1],
                 0.0,  # robot base on the ground
             ),

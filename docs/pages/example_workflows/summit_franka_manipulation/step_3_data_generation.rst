@@ -120,7 +120,7 @@ Trajectory files are stored at::
 .. code-block:: bash
 
    python isaaclab_arena/scripts/record_automoma_demos.py \
-     --device cpu --enable_cameras \
+     --enable_cameras \
      --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
      --dataset_file $DATASET_DIR/summit_franka_open_microwave_7221_drive.hdf5 \
      --num_episodes 50 \
@@ -137,13 +137,15 @@ may result in some episodes failing if physics parameters are not well tuned.
 .. code-block:: bash
 
    python isaaclab_arena/scripts/record_automoma_demos.py \
-     --device cpu --enable_cameras --set_state \
+     --enable_cameras \
+     --set_state \
      --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
      --dataset_file $DATASET_DIR/summit_franka_open_microwave_7221_setstate.hdf5 \
      --num_episodes 50 \
      summit_franka_open_door \
      --object_name microwave_7221 \
-     --scene_name scene_0_seed_0
+     --scene_name scene_0_seed_0 \
+     --object_center
 
 With ``--set_state``, robot joints and object articulation are teleported directly
 each step — no physics simulation for contacts or friction. This guarantees that
@@ -156,12 +158,13 @@ You can use the ``replay`` policy type to replay any recorded HDF5:
 .. code-block:: bash
 
    python isaaclab_arena/examples/policy_runner.py \
-     --device cpu --enable_cameras \
+     --enable_cameras \
      --policy_type replay \
      --replay_file_path $DATASET_DIR/summit_franka_open_microwave_7221_drive.hdf5 \
      summit_franka_open_door \
      --object_name microwave_7221 \
-     --scene_name scene_0_seed_0
+     --scene_name scene_0_seed_0 \
+     --object_center
 
 You can also replay automoma trajectories directly (without recording to HDF5):
 

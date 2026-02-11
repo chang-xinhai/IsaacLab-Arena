@@ -26,11 +26,25 @@ python isaaclab_arena/examples/policy_runner.py \
   --embodiment gr1_joint
 
 
+python isaaclab_arena/scripts/record_automoma_demos.py \
+  --enable_cameras --set_state \
+  --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
+  --dataset_file data/automoma/summit_franka_open_microwave_7221_setstate.hdf5 \
+  --num_episodes 50 \
+  summit_franka_open_door \
+  --object_name microwave_7221 \
+  --scene_name scene_0_seed_0 \
+  --object_center
 
 
-
-
-
+python isaaclab_arena/examples/policy_runner.py \
+     --enable_cameras \
+     --policy_type replay \
+     --replay_file_path data/automoma/summit_franka_open_microwave_7221_setstate.hdf5 \
+     summit_franka_open_door \
+     --object_name microwave_7221 \
+     --scene_name scene_0_seed_0 \
+     --object_center
 
 DATASET_DIR="/home/xinhai/projects/lerobot-arena/IsaacLab-Arena/data/nvidia/Arena-G1-Loco-Manipulation-Task"
 

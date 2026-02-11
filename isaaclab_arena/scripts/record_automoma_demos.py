@@ -169,9 +169,9 @@ def main():
         print(f"[Episode {ep_idx + 1}/{num_episodes}] (traj index {actual_ep})")
 
         for step in tqdm.tqdm(range(policy.n_steps), desc=f"  Episode {ep_idx + 1}", leave=False):
-            with torch.inference_mode():
+            with torch.no_grad():
                 action = policy.get_action(env, obs)
-                obs, _, terminated, truncated, _ = env.step(action)
+            obs, _, terminated, truncated, _ = env.step(action)
 
         # Mark episode and export
         if hasattr(env, "recorder_manager"):
