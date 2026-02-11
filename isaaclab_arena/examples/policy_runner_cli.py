@@ -8,6 +8,7 @@ import argparse
 from isaaclab_arena.examples.example_environments.cli import get_isaaclab_arena_example_environment_cli_parser
 from isaaclab_arena.policy.policy_base import PolicyBase
 from isaaclab_arena.policy.replay_action_policy import ReplayActionPolicy
+from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
 from isaaclab_arena.policy.zero_action_policy import ZeroActionPolicy
 
 
@@ -83,6 +84,50 @@ def add_gr00t_closedloop_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_replay_automoma_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add replay automoma trajectory policy specific arguments to the parser."""
+    automoma_group = parser.add_argument_group(
+        "Replay Automoma Trajectory Policy",
+        "Arguments for replaying pre-computed automoma trajectories",
+    )
+    automoma_group.add_argument(
+        "--traj_file",
+        type=str,
+        help=(
+            "Path to the .pt trajectory data file produced by the automoma planner. "
+            "Required with --policy_type replay_automoma."
+        ),
+    )
+    automoma_group.add_argument(
+        "--episode_index",
+        type=int,
+        default=0,
+        help="Index of the episode to replay (0-indexed). Default: 0.",
+    )
+    automoma_group.add_argument(
+        "--set_state",
+        action="store_true",
+        default=False,
+        help=(
+            "If set, directly teleport robot joints and object state each step "
+            "(bypasses physics). If not set (default), send joint targets as "
+            "actions and let physics simulation handle contacts/friction."
+        ),
+    )
+    automoma_group.add_argument(
+        "--num_episodes",
+        type=int,
+        default=1,
+        help="Number of episodes to replay from the trajectory file. Default: 1.",
+    )
+    automoma_group.add_argument(
+        "--only_successful",
+        action="store_true",
+        default=True,
+        help="Only replay episodes marked as successful in the trajectory file. Default: True.",
+    )
+
+
 def setup_policy_argument_parser(args_parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     """Set up and configure the argument parser with all policy-related arguments."""
     # Get the base parser from IsaacLab Arena
@@ -91,9 +136,12 @@ def setup_policy_argument_parser(args_parser: argparse.ArgumentParser | None = N
     args_parser.add_argument(
         "--policy_type",
         type=str,
-        choices=["zero_action", "replay", "replay_lerobot", "gr00t_closedloop"],
+        choices=["zero_action", "replay", "replay_lerobot", "gr00t_closedloop", "replay_automoma"],
         required=True,
-        help="Type of policy to use: 'zero_action' or 'replay' or 'replay_lerobot' or 'gr00t_closedloop'",
+        help=(
+            "Type of policy to use: 'zero_action', 'replay', 'replay_lerobot', "
+            "'gr00t_closedloop', or 'replay_automoma'"
+        ),
     )
 
     # Add policy-specific argument groups
@@ -101,6 +149,7 @@ def setup_policy_argument_parser(args_parser: argparse.ArgumentParser | None = N
     add_replay_arguments(args_parser)
     add_replay_lerobot_arguments(args_parser)
     add_gr00t_closedloop_arguments(args_parser)
+    add_replay_automoma_arguments(args_parser)
     parsed_args = args_parser.parse_args()
 
     if parsed_args.policy_type == "replay" and parsed_args.replay_file_path is None:
@@ -109,6 +158,8 @@ def setup_policy_argument_parser(args_parser: argparse.ArgumentParser | None = N
         raise ValueError("--config_yaml_path is required when using --policy_type replay_lerobot")
     if parsed_args.policy_type == "gr00t_closedloop" and parsed_args.policy_config_yaml_path is None:
         raise ValueError("--policy_config_yaml_path is required when using --policy_type gr00t_closedloop")
+    if parsed_args.policy_type == "replay_automoma" and getattr(parsed_args, "traj_file", None) is None:
+        raise ValueError("--traj_file is required when using --policy_type replay_automoma")
     return args_parser
 
 
@@ -141,6 +192,17 @@ def create_policy(args: argparse.Namespace) -> tuple[PolicyBase, int]:
 
         policy = Gr00tClosedloopPolicy(args.policy_config_yaml_path, num_envs=args.num_envs, device=args.policy_device)
         num_steps = args.num_steps
+    elif args.policy_type == "replay_automoma":
+        policy = ReplayAutomomaTrajectoryPolicy(
+            traj_file=args.traj_file,
+            episode_index=args.episode_index,
+            set_state=args.set_state,
+            device=args.device,
+            only_successful=args.only_successful,
+        )
+        # Total steps = steps_per_episode * num_episodes
+        num_episodes = getattr(args, "num_episodes", 1)
+        num_steps = policy.n_steps * num_episodes
     else:
         raise ValueError(f"Unknown policy type: {args.type}")
     return policy, num_steps

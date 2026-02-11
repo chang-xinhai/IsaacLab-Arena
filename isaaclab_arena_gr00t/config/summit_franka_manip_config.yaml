@@ -1,0 +1,63 @@
+# Copyright (c) 2025, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Configuration for converting Summit Franka HDF5 dataset to LeRobot format.
+#
+# DUMMY values you need to fill:
+#   - data_root: Set to the directory containing your HDF5 file
+#   - hdf5_name: Set to your actual HDF5 filename
+
+# Input/Output paths
+data_root: /datasets/isaaclab_arena/summit_franka_tutorial
+hdf5_name: "summit_franka_open_microwave_7221_generated.hdf5"
+
+# Task description
+language_instruction: "Reach out to the microwave and open it."
+task_index: 0
+
+# Data field mappings (these should match what the summit_franka embodiment outputs)
+state_name_sim: "robot_joint_pos"
+action_name_sim: "processed_actions"
+# Camera observation names (3 cameras for summit_franka)
+pov_cam_names_sim:
+  - "ego_topdown_rgb"
+  - "ego_wrist_rgb"
+  - "fix_local_rgb"
+
+# Video field names for LeRobot format
+video_names_lerobot:
+  - "observation.images.ego_topdown"
+  - "observation.images.ego_wrist"
+  - "observation.images.fix_local"
+
+# LeRobot field names
+state_name_lerobot: "observation.state"
+action_name_lerobot: "action"
+# Legacy single-camera field (kept for backward compat; prefer pov_cam_names_sim above)
+video_name_lerobot: "observation.images.ego_topdown"
+task_description_lerobot: "annotation.human.action.task_description"
+
+# Output configuration
+fps: 50
+chunks_size: 1000
+
+# Metadata file paths
+data_path: "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+video_path: "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+
+# Config template paths
+modality_template_path: "isaaclab_arena_gr00t/config/summit_franka/modality.json"
+info_template_path: "isaaclab_arena_gr00t/config/summit_franka/info.json"
+
+# Joint space configs
+policy_joints_config_path: "isaaclab_arena_gr00t/config/summit_franka/gr00t_12dof_joint_space.yaml"
+action_joints_config_path: "isaaclab_arena_gr00t/config/summit_franka/12dof_action_joint_space.yaml"
+state_joints_config_path: "isaaclab_arena_gr00t/config/summit_franka/12dof_state_joint_space.yaml"
+
+robot_type: "summit_franka"
+
+# Image size (matches typical IsaacLab camera)
+original_image_size: [512, 512, 3]
+target_image_size: [512, 512, 3]

@@ -1,0 +1,52 @@
+# Copyright (c) 2025, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Closed-loop GR00T policy configuration for Summit Franka.
+#
+# DUMMY values you need to fill:
+#   - model_path: Path to your fine-tuned GR00T checkpoint
+#   - data_config: The GR00T data config name for Summit Franka
+#     (you will need to register a custom DataConfig or use an existing compatible one)
+#   - embodiment_tag: The tag used during fine-tuning
+
+# Path to the fine-tuned GR00T model checkpoint
+model_path: /models/isaaclab_arena/summit_franka_tutorial/checkpoint-20000
+
+# Language instruction for the task
+language_instruction: "Reach out to the microwave and open it."
+
+# Action prediction settings
+action_horizon: 16
+action_chunk_length: 16
+
+# DUMMY: You need to register a custom data_config for summit_franka
+# or use an existing compatible one (e.g. "fourier_gr1_arms_only"
+# may work if the observation/action dimensions match).
+# See isaaclab_arena_gr00t/data_config.py for how to create a custom DataConfig.
+embodiment_tag: summit_franka
+data_config: isaaclab_arena_gr00t.data_config:SummitFrankaDataConfig
+
+# Video backend
+video_backend: decord
+
+# Joint space configs
+policy_joints_config_path: isaaclab_arena_gr00t/config/summit_franka/gr00t_12dof_joint_space.yaml
+action_joints_config_path: isaaclab_arena_gr00t/config/summit_franka/12dof_action_joint_space.yaml
+state_joints_config_path: isaaclab_arena_gr00t/config/summit_franka/12dof_state_joint_space.yaml
+
+# Task mode (for summit_franka table-top manipulation, no locomotion)
+# DUMMY: You may need to add a new TaskMode value in policy_config.py
+# or reuse "gr1_tabletop_manipulation" if the structure matches.
+task_mode_name: summit_franka_manipulation
+
+# Camera observation keys (3 cameras for summit_franka)
+pov_cam_names_sim:
+  - "ego_topdown_rgb"
+  - "ego_wrist_rgb"
+  - "fix_local_rgb"
+
+# Image sizes
+original_image_size: [512, 512, 3]
+target_image_size: [512, 512, 3]

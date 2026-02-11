@@ -126,11 +126,13 @@ class Gr00tClosedloopPolicy(PolicyBase):
                 self.policy_config.target_image_size[1],
                 self.policy_config.target_image_size[2],
             ),
-            "state.left_arm": joint_pos_state_policy["left_arm"].reshape(self.num_envs, 1, -1),
-            "state.right_arm": joint_pos_state_policy["right_arm"].reshape(self.num_envs, 1, -1),
-            "state.left_hand": joint_pos_state_policy["left_hand"].reshape(self.num_envs, 1, -1),
-            "state.right_hand": joint_pos_state_policy["right_hand"].reshape(self.num_envs, 1, -1),
         }
+        # Dynamically populate state keys based on policy_joints_config groups
+        for group_name in self.policy_joints_config.keys():
+            if group_name in joint_pos_state_policy:
+                policy_observations[f"state.{group_name}"] = joint_pos_state_policy[group_name].reshape(
+                    self.num_envs, 1, -1
+                )
         # NOTE(xinjieyao, 2025-10-07): waist is not used in GR1 tabletop manipulation
         if self.task_mode == TaskMode.G1_LOCOMANIPULATION:
             policy_observations["state.waist"] = joint_pos_state_policy["waist"].reshape(self.num_envs, 1, -1)

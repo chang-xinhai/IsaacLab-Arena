@@ -19,6 +19,9 @@ from isaaclab_arena.examples.example_environments.kitchen_pick_and_place_environ
     KitchenPickAndPlaceEnvironment,
 )
 from isaaclab_arena.examples.example_environments.press_button_environment import PressButtonEnvironment
+from isaaclab_arena.examples.example_environments.summit_franka_open_door_environment import (
+    SummitFrankaOpenDoorEnvironment,
+)
 
 # NOTE(alexmillane, 2025.09.04): There is an issue with type annotation in this file.
 # We cannot annotate types which require the simulation app to be started in order to
@@ -34,6 +37,7 @@ ExampleEnvironments = {
     GalileoPickAndPlaceEnvironment.name: GalileoPickAndPlaceEnvironment,
     GalileoG1LocomanipPickAndPlaceEnvironment.name: GalileoG1LocomanipPickAndPlaceEnvironment,
     PressButtonEnvironment.name: PressButtonEnvironment,
+    SummitFrankaOpenDoorEnvironment.name: SummitFrankaOpenDoorEnvironment,
 }
 
 

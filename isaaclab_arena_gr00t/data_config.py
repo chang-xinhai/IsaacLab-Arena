@@ -128,3 +128,111 @@ class UnitreeG1SimWBCDataConfig(BaseDataConfig):
             ),
         ]
         return ComposedModalityTransform(transforms=transforms)
+
+
+class SummitFrankaDataConfig(BaseDataConfig):
+    """
+    Data configuration for the Summit Franka mobile manipulator.
+
+    This configuration supports coordinated whole-body manipulation with:
+    - 3 video observations: ego_topdown, ego_wrist, fix_local
+    - 12-DOF state: 3 base (base_x, base_y, base_z) + 7 arm (panda_joint1..7) + 2 gripper
+    - 12-DOF action: same joints for coordinated whole-body control
+
+    Usage:
+        Can be loaded as external config with:
+        isaaclab_arena_gr00t.data_config:SummitFrankaDataConfig
+    """
+
+    video_keys = [
+        "video.ego_topdown",
+        "video.ego_wrist",
+        "video.fix_local",
+    ]
+    state_keys = [
+        "state.base",
+        "state.arm",
+        "state.gripper",
+    ]
+    action_keys = [
+        "action.base",
+        "action.arm",
+        "action.gripper",
+    ]
+    language_keys = ["annotation.human.task_description"]
+    observation_indices = [0]
+    action_indices = list(range(16))
+
+    def modality_config(self) -> dict[str, ModalityConfig]:
+        """Override to provide custom modality configuration."""
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+
+        language_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.language_keys,
+        )
+
+        modality_configs = {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            "language": language_modality,
+        }
+
+        return modality_configs
+
+    def transform(self) -> ModalityTransform:
+        """Define the complete transformation pipeline for Summit Franka data."""
+        transforms = [
+            # Video transforms: preprocess 3 camera views
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            # State transforms: normalize joint positions (base + arm + gripper)
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "min_max" for key in self.state_keys},
+            ),
+            # Action transforms: normalize control commands (base + arm + gripper)
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+            ),
+            # Concatenation: combine modalities in correct order
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            # GR00T model transform: prepare for policy input
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=32,
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)

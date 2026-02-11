@@ -124,6 +124,8 @@ def ensure_assets_registered():
         # Import modules to trigger asset registration via decorators
         import isaaclab_arena.assets.background_library  # noqa: F401
         import isaaclab_arena.assets.object_library  # noqa: F401
+        import isaaclab_arena.assets.automoma_object_library  # noqa: F401
+        import isaaclab_arena.assets.automoma_background_library  # noqa: F401
         import isaaclab_arena.embodiments  # noqa: F401
         import isaaclab_arena.teleop_devices  # noqa: F401
 

@@ -1,5 +1,6 @@
 **/build
-
+res_for_custom/
+data/
 
 # Prerequisites
 *.d
