@@ -116,13 +116,47 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         if isinstance(seed, (list, tuple, range)):
             seed = seed[0] if len(seed) > 0 else None
 
-        obs, info = self._env.reset(seed=seed, options=options)
+        try:
+            obs, info = self._env.reset(seed=seed, options=options)
+        except Exception as exc:
+            if self._is_invalid_physx_view_error(exc):
+                logging.warning(
+                    "Detected invalid PhysX view during reset. Attempting recovery and retrying reset..."
+                )
+                self._try_recover_physx_views()
+                obs, info = self._env.reset(seed=seed, options=options)
+            else:
+                raise
 
         if "final_info" not in info:
             zeros = np.zeros(self._num_envs, dtype=bool)
             info["final_info"] = {"is_success": zeros}
 
         return obs, info
+
+    @staticmethod
+    def _is_invalid_physx_view_error(exc: Exception) -> bool:
+        message = str(exc)
+        return (
+            "Simulation view object is invalidated" in message
+            or "Failed to set DOF positions in backend" in message
+            or "setDofPositions" in message
+        )
+
+    def _try_recover_physx_views(self) -> None:
+        """Best-effort recovery after USD/PhysX view invalidation."""
+        try:
+            if hasattr(self._env, "sim") and hasattr(self._env.sim, "reset"):
+                self._env.sim.reset()
+        except Exception as exc:
+            logging.warning(f"PhysX recovery: sim.reset() failed: {exc}")
+
+        try:
+            if hasattr(self._env, "scene"):
+                dt = getattr(self._env, "physics_dt", 0.0)
+                self._env.scene.update(dt)
+        except Exception as exc:
+            logging.warning(f"PhysX recovery: scene.update() failed: {exc}")
 
     def step(
         self, actions: np.ndarray | torch.Tensor

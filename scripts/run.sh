@@ -111,6 +111,7 @@ lerobot-eval \
     --trust_remote_code=True \
     --eval.batch_size=1 
 
+conda activate lerobot-arena
 cd IsaacLab-Arena
 lerobot-eval \
   --policy.path=../lerobot/outputs/train/act_summit_franka_open_microwave_7221_setstate/checkpoints/010000/pretrained_model \
