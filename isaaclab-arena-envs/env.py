@@ -23,7 +23,16 @@ from lerobot.envs.configs import EnvConfig
 HUB_REPO_ID = "nvidia/isaaclab-arena-envs"
 EXAMPLE_ENVS = "example_envs.yaml"
 
+# Local directory of this file (used for local hub_path resolution)
+_LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
+
 def _download_hub_file(filename: str):
+    # First, check if the file exists locally in the same directory as this env.py.
+    # This enables --env.hub_path to point to a local directory without
+    # requiring Hub downloads.
+    local_path = os.path.join(_LOCAL_DIR, filename)
+    if os.path.exists(local_path):
+        return local_path
     return hf_hub_download(repo_id=HUB_REPO_ID, filename=filename)
 
 def _download_and_import(filename: str):
@@ -174,6 +183,24 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
 
     raw_env = env_builder.make_registered()
 
+    # ---- Post-creation scene hooks ----
+    # 1) Deactivate duplicate object prims baked into the background scene USD
+    object_name = config.get("object_name")
+    if object_name:
+        from isaaclab_arena.utils.sim_utils import deactivate_prims_by_name
+        deactivate_prims_by_name(object_name)
+
+    # 2) Set lighting mode (default: grey mode = 2)
+    lighting_mode = config.get("lighting_mode")
+    if lighting_mode is not None:
+        from isaaclab_arena.utils.sim_utils import set_lighting_mode
+        set_lighting_mode(int(lighting_mode))
+
+    # 3) Optionally disable collision for robot and target object
+    if config.get("disable_collision", False):
+        from isaaclab_arena.utils.sim_utils import disable_collision_for_env
+        disable_collision_for_env(raw_env, object_name)
+
     # Set render_mode on underlying env
     if render_mode and hasattr(raw_env, "render_mode"):
         raw_env.render_mode = render_mode
@@ -204,6 +231,11 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     if task is None:
         task = f"Complete the {environment.replace('_', ' ')} task."
 
+    # Check for mobile_base_relative
+    mobile_base_relative = config.get("mobile_base_relative", False)
+    base_dof = config.get("base_dof", 3)
+    state_key = config.get("state_key", "joint_pos")
+
     # Wrap and return
     wrapped_env = IsaacLabEnvWrapper(
         raw_env,
@@ -211,6 +243,9 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         task=task,
         render_mode=render_mode,
         simulation_app=app_launcher,
+        mobile_base_relative=mobile_base_relative,
+        base_dof=base_dof,
+        state_key=state_key,
     )
     logging.info(f"Created: {environment} with {wrapped_env.num_envs} envs, render_mode={render_mode}")
 
@@ -285,6 +320,25 @@ def make_env(
         "camera_keys": cfg.camera_keys or "",  # Pass empty string for no cameras
         "task": cfg.task,
     }
+
+    # ---- Merge extra kwargs from cfg ----
+    # IsaaclabArenaEnv.__post_init__ promotes cfg.kwargs entries to attributes.
+    # Copy any extra attributes (e.g. object_name, scene_name, object_center,
+    # disable_collision, mobile_base_relative, lighting_mode) into the config
+    # so they reach the IsaacLab argparse namespace.
+    _known_keys = set(config.keys()) | {"kwargs", "type", "fps", "features",
+                                          "features_map", "max_parallel_tasks",
+                                          "disable_env_checker", "hub_path",
+                                          "num_envs"}
+    for attr_name in dir(cfg):
+        if attr_name.startswith("_") or attr_name in _known_keys:
+            continue
+        if callable(getattr(cfg, attr_name)):
+            continue
+        try:
+            config[attr_name] = getattr(cfg, attr_name)
+        except Exception:
+            pass
 
     logging.info(f"EnvHub make_env: environment={config.get('environment')}, n_envs={n_envs}")
     logging.info(f"Config: headless={config.get('headless')}, enable_cameras={config.get('enable_cameras')}")

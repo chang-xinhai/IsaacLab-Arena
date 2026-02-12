@@ -9,3 +9,5 @@ repo:
     g1_locomanip_pnp: galileo_g1_locomanip_pick_and_place_environment.GalileoG1LocomanipPickAndPlaceEnvironment
     kitchen_pnp: kitchen_pick_and_place_environment.KitchenPickAndPlaceEnvironment
     press_button: press_button_environment.PressButtonEnvironment
+    summit_franka_open_door: summit_franka_open_door_environment.SummitFrankaOpenDoorEnvironment
+    summit_franka_open_door_eval: summit_franka_open_door_eval_environment.SummitFrankaOpenDoorEvalEnvironment

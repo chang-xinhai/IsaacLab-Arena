@@ -161,51 +161,12 @@ from isaaclab.utils import configclass
 
 from isaaclab_arena.embodiments.summit_franka.summit_franka import SummitFrankaJointSpaceActionsCfg
 from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
-from isaaclab_arena.utils.sim_utils import deactivate_prims_by_name, set_lighting_mode, sync_cameras_after_reset
-
-
-def _disable_collision_for_prim_paths(prim_paths: list[str]) -> None:
-    """Disable collision for prims (and descendants) matching the given prim paths.
-
-    Supports prim path regex expressions (e.g. {ENV_REGEX_NS}/Robot).
-    """
-    import omni.usd
-    from pxr import PhysxSchema, Usd, UsdPhysics
-
-    stage = omni.usd.get_context().get_stage()
-    if stage is None:
-        print("[disable_collision] Warning: USD stage is not available.")
-        return
-
-    def _disable_collision_on_prim(prim: Usd.Prim) -> bool:
-        changed = False
-        if prim.HasAPI(UsdPhysics.CollisionAPI):
-            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
-            changed = True
-        if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
-            mesh_api = UsdPhysics.MeshCollisionAPI(prim)
-            if hasattr(mesh_api, "GetCollisionEnabledAttr"):
-                mesh_api.GetCollisionEnabledAttr().Set(False)
-                changed = True
-        if prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
-            PhysxSchema.PhysxCollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
-            changed = True
-        return changed
-
-    total_changed = 0
-    for prim_path in prim_paths:
-        try:
-            prims = sim_utils.find_matching_prims(prim_path, stage)
-        except Exception as exc:
-            print(f"[disable_collision] Warning: could not resolve prim path '{prim_path}': {exc}")
-            continue
-
-        for root_prim in prims:
-            for prim in Usd.PrimRange(root_prim):
-                if _disable_collision_on_prim(prim):
-                    total_changed += 1
-
-    print(f"[disable_collision] Disabled collision on {total_changed} prims.")
+from isaaclab_arena.utils.sim_utils import (
+    deactivate_prims_by_name,
+    disable_collision_for_env,
+    set_lighting_mode,
+    sync_cameras_after_reset,
+)
 
 
 class PreStepFlatCameraObservationsRecorder(RecorderTerm):
@@ -326,12 +287,7 @@ def main():
 
     # 3) Optionally disable collision for robot and target object
     if args_cli.disable_collision:
-        prim_paths: list[str] = []
-        if "robot" in env.scene.keys():
-            prim_paths.append(env.scene["robot"].cfg.prim_path)
-        if object_name and object_name in env.scene.keys():
-            prim_paths.append(env.scene[object_name].cfg.prim_path)
-        _disable_collision_for_prim_paths(prim_paths)
+        disable_collision_for_env(env, object_name)
 
     # ---- Create replay policy ----
     policy = ReplayAutomomaTrajectoryPolicy(

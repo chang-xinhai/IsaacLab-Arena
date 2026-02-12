@@ -495,7 +495,76 @@ For rigid objects, use ``RigidObjectCfg``:
    )
 
 
-8. Debugging Tools
+8. Disabling Collision for Set-State Recording / Evaluation
+-------------------------------------------------------------
+
+When using ``--set_state`` mode (teleporting the robot to pre-planned poses)
+or during evaluation where the policy may command large position jumps,
+collision between the robot and object can cause PhysX to apply enormous
+depenetration forces, sending objects flying.
+
+The solution is to **disable collision** between the robot and the object
+while keeping self-collision and ground-plane collision intact.
+
+8.1 How It Works
+^^^^^^^^^^^^^^^^^
+
+The utility ``disable_collision_for_prim_and_descendants`` in
+``isaaclab_arena.utils.sim_utils`` traverses the entire USD subtree of a
+given prim and disables all collision APIs:
+
+- ``UsdPhysics.CollisionAPI`` — the core collision flag
+- ``PhysxSchema.PhysxCollisionAPI`` — PhysX-specific collision extensions
+- ``UsdPhysics.MeshCollisionAPI`` — mesh-level collision approximation
+
+For mesh/Xform prims that do **not** already have a ``CollisionAPI`` applied,
+the function applies the API first, then disables it. This is necessary
+because some USD assets from PartNet-Mobility only have collision defined
+on a subset of descendant meshes, and simply calling ``RemoveAPI`` is not
+sufficient to prevent PhysX from generating contacts.
+
+.. code-block:: python
+
+   from isaaclab_arena.utils.sim_utils import (
+       disable_collision_for_prim_and_descendants,
+       disable_collision_for_env,
+   )
+
+   # Low-level: disable collision on a specific prim subtree
+   count = disable_collision_for_prim_and_descendants("/World/envs/env_0/Object")
+
+   # High-level: disable collision for both robot and object in an env
+   disable_collision_for_env(env, object_name="microwave_7221")
+
+
+8.2 When to Use
+^^^^^^^^^^^^^^^^
+
+- **Recording with ``--set_state``**: Robot is teleported to grasp poses,
+  which may interpenetrate the object. Pass ``--disable_collision``.
+- **Evaluation with ``lerobot-eval``**: Policy actions may overshoot and
+  cause interpenetration. Add ``disable_collision: true`` to the env config
+  kwargs.
+- **NOT recommended** for force-closure tasks where contact forces
+  between the gripper and handle are essential for the task.
+
+8.3 Common Pitfall: Silent Failure
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A previous implementation using ``try/except`` around ``RemoveAPI`` calls
+silently failed because:
+
+1. ``RemoveAPI`` does not raise an exception on failure — it returns ``False``.
+2. Some prims lack a ``CollisionAPI`` entirely, so removal has no effect.
+3. PhysX caches collision shapes at scene initialization; removing APIs
+   after that point may not take effect without a scene rebuild.
+
+The current implementation avoids these issues by **applying then
+disabling** the API (setting the ``collision:enabled`` attribute to
+``False``), which PhysX respects even after initialization.
+
+
+9. Debugging Tools
 -------------------
 
 - **Contact visualization**: Enable ``activate_contact_sensors=True`` on the

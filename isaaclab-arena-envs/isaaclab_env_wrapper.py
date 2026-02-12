@@ -47,6 +47,9 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         task: str | None = None,
         render_mode: str | None = "rgb_array",
         simulation_app=None,
+        mobile_base_relative: bool = False,
+        base_dof: int = 3,
+        state_key: str = "joint_pos",
     ):
         self._env = env
         self._num_envs = env.num_envs
@@ -54,6 +57,11 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         self._closed = False
         self.render_mode = render_mode
         self._simulation_app = simulation_app
+
+        # Mobile-base-relative: convert policy delta-base actions to absolute
+        self._mobile_base_relative = mobile_base_relative
+        self._base_dof = base_dof
+        self._state_key = state_key
 
         self.observation_space = env.observation_space
         self.action_space = env.action_space
@@ -123,6 +131,10 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         if isinstance(actions, np.ndarray):
             actions = torch.from_numpy(actions).to(self._env.device)
 
+        # Mobile-base-relative: integrate Δbase with current base state
+        if self._mobile_base_relative and self._base_dof > 0:
+            actions = self._integrate_base_deltas(actions)
+
         obs, reward, terminated, truncated, info = self._env.step(actions)
 
         # Convert to numpy for gym compatibility
@@ -152,6 +164,28 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         is_success = success_tensor.cpu().numpy().astype(bool)
 
         return is_success & (terminated | truncated)
+
+    def _integrate_base_deltas(self, actions: torch.Tensor) -> torch.Tensor:
+        """Convert relative base deltas to absolute positions.
+
+        Reads the current base joint state from the env's observation buffer,
+        then replaces ``actions[:, :base_dof]`` with
+        ``current_base + delta_base``.
+        """
+        try:
+            obs_buf = self._env.obs_buf
+            if isinstance(obs_buf, dict) and "policy" in obs_buf:
+                policy_obs = obs_buf["policy"]
+                if self._state_key in policy_obs:
+                    current_state = policy_obs[self._state_key]  # (B, D)
+                    new_actions = actions.clone()
+                    new_actions[:, :self._base_dof] = (
+                        current_state[:, :self._base_dof] + actions[:, :self._base_dof]
+                    )
+                    return new_actions
+        except Exception as e:
+            logging.warning(f"[MobileBaseRelative] Could not read base state: {e}")
+        return actions
 
     def call(self, method_name: str, *args, **kwargs) -> list[Any]:
         if method_name == "_max_episode_steps":

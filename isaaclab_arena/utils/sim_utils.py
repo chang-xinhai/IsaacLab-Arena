@@ -10,6 +10,7 @@ Provides helpers for:
 - Deactivating duplicate prims in the USD stage (e.g., objects baked into scene USDs)
 - Setting viewport lighting modes
 - Syncing camera observations after resets
+- Disabling collision on prims for collision-free recording/evaluation
 """
 
 from __future__ import annotations
@@ -128,3 +129,133 @@ def sync_cameras_after_reset(env: "gym.Env") -> dict:
     obs = env.observation_manager.compute()
     env.obs_buf = obs
     return obs
+
+
+def disable_collision_for_prim_and_descendants(prim_path: str) -> int:
+    """Disable collision on a prim and all its descendants.
+
+    This function traverses the USD stage starting from ``prim_path`` and
+    disables all collision-related APIs on every prim in the subtree.  It
+    handles three types of collision APIs:
+
+    - ``UsdPhysics.CollisionAPI`` — standard USD physics collision
+    - ``UsdPhysics.MeshCollisionAPI`` — mesh-based collision approximation
+    - ``PhysxSchema.PhysxCollisionAPI`` — PhysX-specific collision properties
+
+    For prims that do **not** already have a CollisionAPI applied, the function
+    applies one and then immediately disables it.  This ensures that even prims
+    with implicit (inherited) collision are explicitly disabled.
+
+    Args:
+        prim_path: Absolute USD prim path (e.g., ``/World/envs/env_0/Robot``).
+
+    Returns:
+        Number of prims whose collision was modified.
+    """
+    import omni.usd
+    from pxr import PhysxSchema, Usd, UsdGeom, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        print("[disable_collision] Warning: USD stage is not available.")
+        return 0
+
+    root_prim = stage.GetPrimAtPath(prim_path)
+    if not root_prim.IsValid():
+        print(f"[disable_collision] Warning: prim not found at '{prim_path}'.")
+        return 0
+
+    total_changed = 0
+    for prim in Usd.PrimRange(root_prim):
+        changed = False
+
+        # 1. Disable UsdPhysics.CollisionAPI
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            changed = True
+        elif prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Xform):
+            # For mesh/xform prims that don't have CollisionAPI but might have
+            # implicit collision from parent, apply and disable
+            try:
+                if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                    UsdPhysics.CollisionAPI.Apply(prim)
+                UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+                changed = True
+            except Exception:
+                pass
+
+        # 2. Disable PhysxSchema.PhysxCollisionAPI
+        if prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
+            PhysxSchema.PhysxCollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            changed = True
+
+        # 3. Disable UsdPhysics.MeshCollisionAPI
+        if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+            # MeshCollisionAPI doesn't have GetCollisionEnabledAttr directly
+            # but disabling CollisionAPI above should suffice
+            changed = True
+
+        if changed:
+            total_changed += 1
+
+    return total_changed
+
+
+def disable_collision_for_env(env: "gym.Env", object_name: str | None = None) -> None:
+    """Disable collision for robot and target object in the environment.
+
+    Resolves the actual prim paths from the environment's scene entities,
+    then disables collision on all prims in their subtrees.
+
+    Args:
+        env: The unwrapped IsaacLab environment.
+        object_name: Name of the target object in the scene (e.g., "microwave_7221").
+    """
+    prim_paths: list[str] = []
+
+    # Collect prim paths for robot
+    if hasattr(env, "scene") and "robot" in env.scene.keys():
+        robot_cfg = env.scene["robot"].cfg
+        robot_prim_path = robot_cfg.prim_path
+        # Resolve {ENV_REGEX_NS} patterns for env_0
+        robot_prim_path = robot_prim_path.replace("{ENV_REGEX_NS}", "/World/envs/env_.*")
+        prim_paths.append(robot_prim_path)
+
+    # Collect prim paths for target object
+    if object_name and hasattr(env, "scene") and object_name in env.scene.keys():
+        obj_cfg = env.scene[object_name].cfg
+        obj_prim_path = obj_cfg.prim_path
+        obj_prim_path = obj_prim_path.replace("{ENV_REGEX_NS}", "/World/envs/env_.*")
+        prim_paths.append(obj_prim_path)
+
+    if not prim_paths:
+        print("[disable_collision] No prim paths found to disable collision on.")
+        return
+
+    # Use sim_utils.find_matching_prims to resolve regex patterns
+    import omni.usd
+    from pxr import Usd
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        print("[disable_collision] Warning: USD stage is not available.")
+        return
+
+    total_changed = 0
+    for prim_path in prim_paths:
+        try:
+            import isaaclab.sim as sim_utils
+            resolved_prims = sim_utils.find_matching_prims(prim_path, stage)
+            for root_prim in resolved_prims:
+                actual_path = str(root_prim.GetPath())
+                changed = disable_collision_for_prim_and_descendants(actual_path)
+                total_changed += changed
+        except Exception as exc:
+            # Fallback: try direct path (no regex)
+            clean_path = prim_path.replace("/env_.*", "/env_0")
+            print(f"[disable_collision] Regex resolve failed for '{prim_path}': {exc}")
+            print(f"[disable_collision] Trying direct path: {clean_path}")
+            changed = disable_collision_for_prim_and_descendants(clean_path)
+            total_changed += changed
+
+    print(f"[disable_collision] Disabled collision on {total_changed} prims total.")

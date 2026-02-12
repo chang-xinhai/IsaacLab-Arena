@@ -97,6 +97,7 @@ Follow these steps to complete the workflow:
 - :doc:`step_3_data_generation`
 - :doc:`step_4_policy_training`
 - :doc:`step_5_evaluation`
+- :doc:`step_5_evaluation_with_lerobot`
 - :doc:`physics_tuning_guide`
 - :doc:`custom_assets_guide`
 
@@ -110,5 +111,6 @@ Follow these steps to complete the workflow:
    step_3_data_generation
    step_4_policy_training
    step_5_evaluation
+   step_5_evaluation_with_lerobot
    physics_tuning_guide
    custom_assets_guide

@@ -111,7 +111,20 @@ lerobot-eval \
     --trust_remote_code=True \
     --eval.batch_size=1 
 
-
+cd IsaacLab-Arena
+lerobot-eval \
+  --policy.path=../lerobot/outputs/train/act_summit_franka_open_microwave_7221_setstate/checkpoints/010000/pretrained_model \
+  --env.type=isaaclab_arena \
+  --env.hub_path=$(pwd)/isaaclab-arena-envs \
+  --env.environment=summit_franka_open_door_eval \
+  --env.enable_cameras=true \
+  --env.state_keys=joint_pos \
+  --env.camera_keys=ego_topdown_rgb,ego_wrist_rgb,fix_local_rgb \
+  --env.state_dim=12 --env.action_dim=12 \
+  --env.camera_height=240 --env.camera_width=320 \
+  --env.kwargs='{"object_name":"microwave_7221","scene_name":"scene_0_seed_0","object_center":true,"disable_collision":true,"mobile_base_relative":true}' \
+  --rename_map='{"observation.images.ego_topdown_rgb":"observation.images.ego_topdown","observation.images.ego_wrist_rgb":"observation.images.ego_wrist","observation.images.fix_local_rgb":"observation.images.fix_local"}' \
+  --trust_remote_code=true --eval.batch_size=1 --eval.n_episodes=10
 
 
 
