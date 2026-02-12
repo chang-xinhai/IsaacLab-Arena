@@ -142,10 +142,6 @@ def disable_collision_for_prim_and_descendants(prim_path: str) -> int:
     - ``UsdPhysics.MeshCollisionAPI`` — mesh-based collision approximation
     - ``PhysxSchema.PhysxCollisionAPI`` — PhysX-specific collision properties
 
-    For prims that do **not** already have a CollisionAPI applied, the function
-    applies one and then immediately disables it.  This ensures that even prims
-    with implicit (inherited) collision are explicitly disabled.
-
     Args:
         prim_path: Absolute USD prim path (e.g., ``/World/envs/env_0/Robot``).
 
@@ -153,7 +149,7 @@ def disable_collision_for_prim_and_descendants(prim_path: str) -> int:
         Number of prims whose collision was modified.
     """
     import omni.usd
-    from pxr import PhysxSchema, Usd, UsdGeom, UsdPhysics
+    from pxr import PhysxSchema, Usd, UsdPhysics
 
     stage = omni.usd.get_context().get_stage()
     if stage is None:
@@ -173,16 +169,6 @@ def disable_collision_for_prim_and_descendants(prim_path: str) -> int:
         if prim.HasAPI(UsdPhysics.CollisionAPI):
             UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
             changed = True
-        elif prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Xform):
-            # For mesh/xform prims that don't have CollisionAPI but might have
-            # implicit collision from parent, apply and disable
-            try:
-                if not prim.HasAPI(UsdPhysics.CollisionAPI):
-                    UsdPhysics.CollisionAPI.Apply(prim)
-                UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
-                changed = True
-            except Exception:
-                pass
 
         # 2. Disable PhysxSchema.PhysxCollisionAPI
         if prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
