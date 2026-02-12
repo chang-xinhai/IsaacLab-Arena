@@ -38,12 +38,9 @@ The GR00T model is configured by
       action_joints_config_path: isaaclab_arena_gr00t/config/summit_franka/12dof_action_joint_space.yaml
       state_joints_config_path: isaaclab_arena_gr00t/config/summit_franka/12dof_state_joint_space.yaml
       task_mode_name: summit_franka_manipulation
-      pov_cam_names_sim:
-        - "ego_topdown_rgb"
-        - "ego_wrist_rgb"
-        - "fix_local_rgb"
-      original_image_size: [512, 512, 3]
-      target_image_size: [512, 512, 3]
+      pov_cam_name_sim: "ego_topdown_rgb"
+      original_image_size: [240, 320, 3]
+      target_image_size: [240, 320, 3]
 
 
 Test the policy in a single environment:

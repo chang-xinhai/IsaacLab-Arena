@@ -115,41 +115,81 @@ Trajectory files are stored at::
 
    res_for_custom/automoma_trajs/<robot>/<object>/<scene>/traj_data.pt
 
-**Step 1: Record with drive mode (physics-based)**
+
+**Recording options**
+
+The recording script supports several options that affect the output HDF5:
+
+- ``--set_state``: Teleport robot/object joints directly (no physics). Guarantees
+  the recorded demo exactly follows the planner's trajectory.
+- ``--interpolated X``: Linearly interpolate between trajectory keyframes by
+  factor X (default 1 = none). E.g. ``--interpolated 4`` produces 4x more frames,
+  yielding smoother motion in set-state mode.
+- ``--mobile_base_relative``: Store base actions as relative deltas (Δx, Δy, Δθ)
+  instead of absolute positions. Arm / gripper remain absolute. This is the
+  recommended format for policy training — the policy learns "move forward a bit"
+  which generalises better than "go to world coordinate (x, y)".
+
+**Action space convention**
+
+When ``--mobile_base_relative`` is set, the recorded action space is:
+
+- **Base** (dims 0–2): Relative joint positions (Δx, Δy, Δθ)
+- **Arm** (dims 3–9): Absolute joint positions (next frame's panda_joint1–7)
+- **Gripper** (dims 10–11): Absolute joint positions (finger joints)
+
+During evaluation, relative base actions are integrated with the current state::
+
+    new_base = current_base + delta_base
+
+**Environment loading fixes**
+
+The recording script automatically handles two common issues:
+
+1. **Duplicate object prims**: Background scene USDs often contain the target object.
+   The script deactivates these duplicate prims by matching the object name
+   (case-insensitive) in the USD stage, so only the separately-spawned articulation
+   is active.
+2. **Lighting**: The script sets the viewport lighting to grey mode (mode 2) for
+   consistent rendering across different scenes.
+
+
+**Step 1: Record with set-state mode (recommended for initial data)**
 
 .. code-block:: bash
 
    python isaaclab_arena/scripts/record_automoma_demos.py \
-     --enable_cameras \
-     --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
-     --dataset_file $DATASET_DIR/summit_franka_open_microwave_7221_drive.hdf5 \
-     --num_episodes 50 \
-     summit_franka_open_door \
-     --object_name microwave_7221 \
-     --scene_name scene_0_seed_0
-
-In drive mode (the default), the planner's joint targets are sent to the robot's
-actuators and physics simulation determines the outcome. This is more realistic but
-may result in some episodes failing if physics parameters are not well tuned.
-
-**Step 2: Record with set-state mode (teleport, optional)**
-
-.. code-block:: bash
-
-   python isaaclab_arena/scripts/record_automoma_demos.py \
-     --enable_cameras \
-     --set_state \
+     --enable_cameras --set_state \
+     --interpolated 4 --mobile_base_relative \
      --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
      --dataset_file $DATASET_DIR/summit_franka_open_microwave_7221_setstate.hdf5 \
+     --num_episodes 10 \
+     summit_franka_open_door \
+     --object_name microwave_7221 \
+     --scene_name scene_0_seed_0 \
+     --object_center
+
+With ``--set_state``, robot joints and object articulation are teleported each step.
+Adding ``--interpolated 4`` smooths the original 32-step trajectory to ~125 steps.
+
+**Step 2: Record with drive mode (physics-based, optional)**
+
+.. code-block:: bash
+
+   python isaaclab_arena/scripts/record_automoma_demos.py \
+     --enable_cameras \
+     --interpolated 4 --mobile_base_relative \
+     --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
+     --dataset_file $DATASET_DIR/summit_franka_open_microwave_7221_drive.hdf5 \
      --num_episodes 50 \
      summit_franka_open_door \
      --object_name microwave_7221 \
      --scene_name scene_0_seed_0 \
      --object_center
 
-With ``--set_state``, robot joints and object articulation are teleported directly
-each step — no physics simulation for contacts or friction. This guarantees that
-the recorded demo exactly follows the planner's trajectory.
+In drive mode, the robot is first teleported to the trajectory's starting pose,
+then joint targets are sent to the actuators with physics simulation. This is more
+realistic but may result in some episodes deviating from the planned trajectory.
 
 **Step 3: Preview recorded data**
 
@@ -160,7 +200,7 @@ You can use the ``replay`` policy type to replay any recorded HDF5:
    python isaaclab_arena/examples/policy_runner.py \
      --enable_cameras \
      --policy_type replay \
-     --replay_file_path $DATASET_DIR/summit_franka_open_microwave_7221_drive.hdf5 \
+     --replay_file_path $DATASET_DIR/summit_franka_open_microwave_7221_setstate.hdf5 \
      summit_franka_open_door \
      --object_name microwave_7221 \
      --scene_name scene_0_seed_0 \
@@ -175,6 +215,7 @@ You can also replay automoma trajectories directly (without recording to HDF5):
      --policy_type replay_automoma \
      --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
      --episode_index 0 \
+     --interpolated 4 \
      summit_franka_open_door \
      --object_name microwave_7221 \
      --scene_name scene_0_seed_0

@@ -18,6 +18,7 @@ from isaaclab_arena_gr00t.config.dataset_config import Gr00tDatasetConfig
 from isaaclab_arena_gr00t.data_utils.image_conversion import resize_frames_with_padding
 from isaaclab_arena_gr00t.data_utils.io_utils import (
     create_config_from_yaml,
+    load_config_from_yaml,
     load_json,
     load_robot_joints_config_from_yaml,
 )
@@ -28,6 +29,14 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _episode_sort_key(episode_name: str) -> tuple[int, str]:
+    """Sort episodes numerically by the trailing index in demo_* names."""
+    parts = episode_name.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return (int(parts[1]), episode_name)
+    return (1_000_000_000, episode_name)
 
 
 def _build_policy_joint_names(config: Gr00tDatasetConfig) -> list[str]:
@@ -60,8 +69,7 @@ def _build_video_feature(video_shape: tuple[int, int, int], fps: int, vcodec: st
 
 def _infer_features(
     example_episode: dict[str, Any],
-    video_key: str,
-    video_shape: tuple[int, int, int],
+    video_shapes: dict[str, tuple[int, int, int]],
     config: Gr00tDatasetConfig,
     vcodec: str,
 ) -> dict[str, dict]:
@@ -69,8 +77,8 @@ def _infer_features(
     features: dict[str, dict] = {}
 
     for key, value in example_episode.items():
-        if key == video_key:
-            features[key] = _build_video_feature(video_shape, config.fps, vcodec)
+        if key in video_shapes:
+            features[key] = _build_video_feature(video_shapes[key], config.fps, vcodec)
             continue
 
         if isinstance(value, list):
@@ -95,6 +103,45 @@ def _infer_features(
     return features
 
 
+def _resolve_video_mappings(
+    trajectory: h5py.Group, config: Gr00tDatasetConfig, policy_modality_config: dict[str, Any]
+) -> list[tuple[str, str]]:
+    camera_obs = trajectory.get("camera_obs", None)
+    if camera_obs is None:
+        raise KeyError("HDF5 trajectory is missing 'camera_obs' group")
+
+    camera_keys = set(camera_obs.keys())
+    mappings: list[tuple[str, str]] = []
+
+    video_config = policy_modality_config.get("video", {})
+    if video_config:
+        for video_name, video_entry in video_config.items():
+            lerobot_key = video_entry.get("original_key", video_name)
+
+            candidate_names = []
+            if video_name:
+                candidate_names.append(f"{video_name}_rgb")
+            if isinstance(lerobot_key, str) and lerobot_key:
+                lerobot_suffix = lerobot_key.rsplit(".", 1)[-1]
+                candidate_names.append(f"{lerobot_suffix}_rgb")
+
+            sim_cam_name = next((name for name in candidate_names if name in camera_keys), None)
+            if sim_cam_name is None:
+                raise ValueError(
+                    f"No matching camera found for '{lerobot_key}'. Available cameras: {sorted(camera_keys)}"
+                )
+            mappings.append((lerobot_key, sim_cam_name))
+        return mappings
+
+    if config.pov_cam_name_sim in camera_keys:
+        return [(config.lerobot_keys["video"], config.pov_cam_name_sim)]
+
+    raise ValueError(
+        f"No video mapping found. Expected '{config.pov_cam_name_sim}' in camera_obs. "
+        f"Available cameras: {sorted(camera_keys)}"
+    )
+
+
 def _extract_teleop_command(trajectory: h5py.Group, teleop_key: str, config: Gr00tDatasetConfig) -> np.ndarray:
     assert "action" in trajectory.keys()
     assert teleop_key in config.hdf5_keys
@@ -105,7 +152,7 @@ def _extract_teleop_command(trajectory: h5py.Group, teleop_key: str, config: Gr0
 def _prepare_episode_data(
     trajectory: h5py.Group,
     config: Gr00tDatasetConfig,
-) -> tuple[dict[str, Any], np.ndarray]:
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     data: dict[str, Any] = {}
 
     policy_modality_config = load_json(config.modality_template_path)
@@ -193,18 +240,22 @@ def _prepare_episode_data(
     data["next.done"] = done
     data["observation.img_state_delta"] = np.zeros((length, 1), dtype=np.float64)
 
-    frames = np.array(trajectory["camera_obs"][config.pov_cam_name_sim])
-    frames = frames[:-1]
+    frames_by_key: dict[str, np.ndarray] = {}
+    for lerobot_key, sim_cam_name in _resolve_video_mappings(trajectory, config, policy_modality_config):
+        frames = np.array(trajectory["camera_obs"][sim_cam_name])
+        frames = frames[:-1]
 
-    if config.target_image_size != config.original_image_size:
-        frames = resize_frames_with_padding(
-            frames, target_image_size=config.target_image_size, bgr_conversion=False, pad_img=True
-        )
+        if config.target_image_size != config.original_image_size:
+            frames = resize_frames_with_padding(
+                frames, target_image_size=config.target_image_size, bgr_conversion=False, pad_img=True
+            )
 
-    if len(frames) != length:
-        raise ValueError(f"Video length {len(frames)} does not match data length {length}")
+        if len(frames) != length:
+            raise ValueError(f"Video length {len(frames)} does not match data length {length}")
 
-    return data, frames
+        frames_by_key[lerobot_key] = frames
+
+    return data, frames_by_key
 
 
 def _ensure_output_dir(output_dir: Path) -> None:
@@ -231,20 +282,21 @@ def convert_hdf5_to_lerobot_v30(
     LOGGER.info("Loading HDF5 file: %s", config.hdf5_file_path)
     hdf5_handler = h5py.File(config.hdf5_file_path, "r")
     hdf5_data = hdf5_handler["data"]
-    trajectory_ids = list(hdf5_data.keys())
+    trajectory_ids = sorted(hdf5_data.keys(), key=_episode_sort_key)
 
     dataset = None
     try:
         for trajectory_id in tqdm(trajectory_ids, desc="episodes"):
             trajectory = hdf5_data[trajectory_id]
-            episode_data, frames = _prepare_episode_data(trajectory, config)
+            episode_data, frames_by_key = _prepare_episode_data(trajectory, config)
 
             if dataset is None:
-                video_key = config.lerobot_keys["video"]
-                video_shape = (frames.shape[1], frames.shape[2], frames.shape[3])
                 example_episode = dict(episode_data)
-                example_episode[video_key] = frames[0]
-                features = _infer_features(example_episode, video_key, video_shape, config, vcodec)
+                video_shapes = {}
+                for video_key, frames in frames_by_key.items():
+                    video_shapes[video_key] = (frames.shape[1], frames.shape[2], frames.shape[3])
+                    example_episode[video_key] = frames[0]
+                features = _infer_features(example_episode, video_shapes, config, vcodec)
 
                 dataset = LeRobotDataset.create(
                     repo_id=repo_id,
@@ -259,7 +311,10 @@ def convert_hdf5_to_lerobot_v30(
                     vcodec=vcodec,
                 )
 
-            length = frames.shape[0]
+            lengths = {frames.shape[0] for frames in frames_by_key.values()}
+            if len(lengths) != 1:
+                raise ValueError(f"Mismatched video lengths: {lengths}")
+            length = lengths.pop()
 
             for t in range(length):
                 frame = {}
@@ -269,7 +324,8 @@ def convert_hdf5_to_lerobot_v30(
                     else:
                         frame[key] = values[t]
 
-                frame[config.lerobot_keys["video"]] = frames[t]
+                for video_key, frames in frames_by_key.items():
+                    frame[video_key] = frames[t]
                 frame["task"] = config.language_instruction
                 dataset.add_frame(frame)
 
@@ -287,6 +343,16 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Convert HDF5 to LeRobot v3.0 format")
     parser.add_argument("--yaml_file", required=True, help="Path to YAML configuration file")
+    parser.add_argument(
+        "--data_root",
+        default=None,
+        help="Override data_root from YAML (directory containing the HDF5 file)",
+    )
+    parser.add_argument(
+        "--hdf5_name",
+        default=None,
+        help="Override hdf5_name from YAML (HDF5 filename)",
+    )
     parser.add_argument(
         "--repo_id",
         default=None,
@@ -323,7 +389,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    config = create_config_from_yaml(args.yaml_file, Gr00tDatasetConfig)
+    if args.data_root is None and args.hdf5_name is None:
+        config = create_config_from_yaml(args.yaml_file, Gr00tDatasetConfig)
+    else:
+        config_data = load_config_from_yaml(args.yaml_file, Gr00tDatasetConfig)
+        if args.data_root is not None:
+            config_data["data_root"] = Path(args.data_root)
+        if args.hdf5_name is not None:
+            config_data["hdf5_name"] = args.hdf5_name
+        config = Gr00tDatasetConfig(**config_data)
 
     repo_id = args.repo_id
     if repo_id is None:

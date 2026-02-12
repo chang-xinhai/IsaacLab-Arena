@@ -9,6 +9,28 @@ import torch
 from isaaclab_arena_gr00t.data_utils.robot_joints import JointsAbsPosition
 
 
+def _normalize_joint_order_config(joints_order_config: dict) -> dict[str, int]:
+    """Normalize joint order config to a flat joint->index mapping."""
+    if not joints_order_config:
+        return {}
+
+    values = list(joints_order_config.values())
+    if all(isinstance(value, int) for value in values):
+        return joints_order_config
+
+    if all(isinstance(value, (list, tuple)) for value in values):
+        flat_config: dict[str, int] = {}
+        index = 0
+        for joint_list in joints_order_config.values():
+            for joint_name in joint_list:
+                if joint_name not in flat_config:
+                    flat_config[joint_name] = index
+                    index += 1
+        return flat_config
+
+    raise ValueError(f"Unsupported joints_order_config format: {joints_order_config}")
+
+
 def remap_sim_joints_to_policy_joints(
     sim_joints_state: JointsAbsPosition, policy_joints_config: dict[str, list[str]]
 ) -> dict[str, np.ndarray]:
@@ -17,15 +39,16 @@ def remap_sim_joints_to_policy_joints(
     """
     data = {}
     assert isinstance(sim_joints_state, JointsAbsPosition)
+    joints_order_config = _normalize_joint_order_config(sim_joints_state.joints_order_config)
     for group, joints_list in policy_joints_config.items():
         data[group] = []
 
         for joint_name in joints_list:
-            if joint_name in sim_joints_state.joints_order_config:
-                joint_index = sim_joints_state.joints_order_config[joint_name]
+            if joint_name in joints_order_config:
+                joint_index = joints_order_config[joint_name]
                 data[group].append(sim_joints_state.joints_pos[:, joint_index])
             else:
-                raise ValueError(f"Joint {joint_name} not found in {sim_joints_state.joints_order_config}")
+                raise ValueError(f"Joint {joint_name} not found in {joints_order_config}")
 
         data[group] = np.stack(data[group], axis=1)
     return data

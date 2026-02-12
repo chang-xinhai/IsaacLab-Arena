@@ -4,38 +4,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Configuration for converting Summit Franka HDF5 dataset to LeRobot format.
-#
-# DUMMY values you need to fill:
-#   - data_root: Set to the directory containing your HDF5 file
-#   - hdf5_name: Set to your actual HDF5 filename
 
 # Input/Output paths
-data_root: /datasets/isaaclab_arena/summit_franka_tutorial
-hdf5_name: "summit_franka_open_microwave_7221_generated.hdf5"
+data_root: data/automoma
+hdf5_name: "summit_franka_open_microwave_7221_setstate.hdf5"
 
 # Task description
 language_instruction: "Reach out to the microwave and open it."
 task_index: 0
 
-# Data field mappings (these should match what the summit_franka embodiment outputs)
-state_name_sim: "robot_joint_pos"
+# Data field mappings (must match what the summit_franka recording produces)
+# State: absolute joint positions from obs/joint_pos  (12 DOF)
+state_name_sim: "joint_pos"
+# Action: absolute joint positions from processed_actions (12 DOF)
 action_name_sim: "processed_actions"
-# Camera observation names (3 cameras for summit_franka)
-pov_cam_names_sim:
-  - "ego_topdown_rgb"
-  - "ego_wrist_rgb"
-  - "fix_local_rgb"
 
-# Video field names for LeRobot format
-video_names_lerobot:
-  - "observation.images.ego_topdown"
-  - "observation.images.ego_wrist"
-  - "observation.images.fix_local"
+# Primary camera for video conversion (singular — matches Gr00tDatasetConfig.pov_cam_name_sim)
+pov_cam_name_sim: "ego_topdown_rgb"
 
 # LeRobot field names
 state_name_lerobot: "observation.state"
 action_name_lerobot: "action"
-# Legacy single-camera field (kept for backward compat; prefer pov_cam_names_sim above)
 video_name_lerobot: "observation.images.ego_topdown"
 task_description_lerobot: "annotation.human.action.task_description"
 
@@ -58,6 +47,6 @@ state_joints_config_path: "isaaclab_arena_gr00t/config/summit_franka/12dof_state
 
 robot_type: "summit_franka"
 
-# Image size (matches typical IsaacLab camera)
-original_image_size: [512, 512, 3]
-target_image_size: [512, 512, 3]
+# Image size (must match the actual camera resolution in summit_franka.py)
+original_image_size: [240, 320, 3]
+target_image_size: [240, 320, 3]

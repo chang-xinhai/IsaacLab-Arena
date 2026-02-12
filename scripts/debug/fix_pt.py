@@ -1,8 +1,8 @@
 import torch
 
 # --- Configuration ---
-input_path = "/home/xinhai/projects/lerobot-arena/IsaacLab-Arena/res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data_11d.pt"
-output_path = input_path.replace("traj_data_11d.pt", "traj_data.pt")
+input_path = "/home/xinhai/projects/lerobot-arena/IsaacLab-Arena/res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/filtered_traj_data.pt"
+output_path = input_path.replace("filtered_traj_data.pt", "traj_data.pt")
 def process_data(tensor):
     """
     Transforms (..., 11) tensor into:

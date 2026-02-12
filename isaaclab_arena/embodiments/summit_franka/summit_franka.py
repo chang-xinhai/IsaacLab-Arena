@@ -15,7 +15,11 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.envs import ManagerBasedRLMimicEnv
-from isaaclab.envs.mdp.actions.actions_cfg import BinaryJointPositionActionCfg, DifferentialInverseKinematicsActionCfg
+from isaaclab.envs.mdp.actions.actions_cfg import (
+    BinaryJointPositionActionCfg,
+    DifferentialInverseKinematicsActionCfg,
+    JointPositionActionCfg,
+)
 from isaaclab.managers import ActionTermCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -241,6 +245,31 @@ class SummitFrankaActionsCfg:
         joint_names=["panda_finger.*"],
         open_command_expr={"panda_finger_.*": 0.04},
         close_command_expr={"panda_finger_.*": 0.0},
+    )
+
+
+@configclass
+class SummitFrankaJointSpaceActionsCfg:
+    """Joint-space action config for Summit Franka trajectory recording.
+
+    All 12 DOF (3 base + 7 arm + 2 gripper) controlled via **absolute** joint
+    position targets.  Used during trajectory recording/replay where the policy
+    outputs complete joint configurations directly.
+
+    ``processed_actions = raw_actions`` exactly (scale=1, offset=0).
+    """
+
+    joint_action: ActionTermCfg = JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[
+            "base_x", "base_y", "base_z",
+            "panda_joint1", "panda_joint2", "panda_joint3",
+            "panda_joint4", "panda_joint5", "panda_joint6", "panda_joint7",
+            "panda_finger_joint1", "panda_finger_joint2",
+        ],
+        scale=1.0,
+        use_default_offset=False,
+        preserve_order=True,
     )
 
 

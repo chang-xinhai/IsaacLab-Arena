@@ -15,6 +15,14 @@ and replays joint positions in the simulator. Supports two modes:
   articulation state each step, bypassing physics. Useful for generating pixel-perfect
   demonstration data.
 
+Additional options:
+
+- **Interpolation** (``--interpolated X``): Linearly interpolate between trajectory
+  keyframes by factor X, producing smoother motion (X-times more steps).
+- **Mobile-base-relative** (``--mobile_base_relative``): Return base joints as
+  relative deltas (Δx, Δy, Δθ) instead of absolute positions. Arm and gripper joints
+  remain absolute.
+
 The .pt file format is::
 
     {
@@ -40,6 +48,7 @@ Usage with policy_runner.py::
 """
 
 import gymnasium as gym
+import numpy as np
 import torch
 from gymnasium.spaces.dict import Dict as GymSpacesDict
 from pathlib import Path
@@ -64,6 +73,11 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         set_state: If True, directly set joint states instead of sending actions.
         device: Torch device string.
         only_successful: If True (default), skip episodes where traj_success is False.
+        interpolation_factor: Factor to interpolate between trajectory keyframes.
+            1 = no interpolation (default). 4 = 3 intermediate frames between each pair.
+        mobile_base_relative: If True, return base joints (first ``base_dof`` dims) as
+            relative deltas from the current state. Arm and gripper remain absolute.
+        base_dof: Number of base degrees of freedom (default 3: x, y, θ).
     """
 
     def __init__(
@@ -73,10 +87,16 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         set_state: bool = False,
         device: str = "cuda",
         only_successful: bool = True,
+        interpolation_factor: int = 1,
+        mobile_base_relative: bool = False,
+        base_dof: int = 3,
     ):
         super().__init__()
         self.set_state = set_state
         self.device = device
+        self.interpolation_factor = max(1, interpolation_factor)
+        self.mobile_base_relative = mobile_base_relative
+        self.base_dof = base_dof
 
         # Load trajectory data
         traj_path = Path(traj_file)
@@ -92,13 +112,15 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
             n_success = success_mask.sum().item()
             if n_success == 0:
                 raise ValueError(f"No successful episodes found in {traj_file}")
-            # Re-index
             self._traj_robot = data["traj_robot"][success_mask]
             self._traj_obj = data["traj_obj"][success_mask]
             self._start_robot = data["start_robot"][success_mask]
             self._start_obj = data["start_obj"][success_mask]
             self._traj_success = data["traj_success"][success_mask]
-            print(f"[ReplayAutomomaTrajectoryPolicy] {n_success}/{len(data['traj_success'])} successful episodes available.")
+            print(
+                f"[ReplayAutomomaTrajectoryPolicy] "
+                f"{n_success}/{len(data['traj_success'])} successful episodes available."
+            )
         else:
             self._traj_robot = data["traj_robot"]
             self._traj_obj = data["traj_obj"]
@@ -107,7 +129,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
             self._traj_success = data.get("traj_success", None)
 
         self._n_episodes = self._traj_robot.shape[0]
-        self._n_steps = self._traj_robot.shape[1]
+        self._n_raw_steps = self._traj_robot.shape[1]
         self._n_robot_joints = self._traj_robot.shape[2]
         self._n_obj_joints = self._traj_obj.shape[2]
 
@@ -120,27 +142,72 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         self._episode_index = episode_index
         self._current_step = 0
 
+        # Pre-compute interpolated trajectories if needed
+        if self.interpolation_factor > 1:
+            self._traj_robot = self._interpolate_trajectory(self._traj_robot)
+            self._traj_obj = self._interpolate_trajectory(self._traj_obj)
+
+        self._n_steps = self._traj_robot.shape[1]
+
         print(
             f"[ReplayAutomomaTrajectoryPolicy] Loaded {self._n_episodes} episodes, "
-            f"{self._n_steps} steps/episode, "
+            f"{self._n_raw_steps} raw steps → {self._n_steps} effective steps "
+            f"(interp={self.interpolation_factor}x), "
             f"{self._n_robot_joints} robot joints, {self._n_obj_joints} object joints. "
             f"Replaying episode {self._episode_index}. "
-            f"Mode: {'set_state' if self.set_state else 'drive (physics)'}"
+            f"Mode: {'set_state' if self.set_state else 'drive (physics)'}. "
+            f"Mobile base relative: {self.mobile_base_relative}."
         )
+
+    def _interpolate_trajectory(self, traj: torch.Tensor) -> torch.Tensor:
+        """Linearly interpolate a trajectory by ``interpolation_factor``.
+
+        Args:
+            traj: Tensor of shape ``(N, T, J)`` — N episodes, T timesteps, J joints.
+
+        Returns:
+            Interpolated tensor of shape ``(N, T * factor, J)``.
+        """
+        N, T, J = traj.shape
+        factor = self.interpolation_factor
+        new_T = (T - 1) * factor + 1  # e.g. T=32, factor=4 → 125 steps
+        result = torch.zeros(N, new_T, J, dtype=traj.dtype, device=traj.device)
+
+        for i in range(T - 1):
+            for k in range(factor):
+                alpha = k / factor
+                idx = i * factor + k
+                result[:, idx, :] = (1.0 - alpha) * traj[:, i, :] + alpha * traj[:, i + 1, :]
+        # Last frame
+        result[:, -1, :] = traj[:, -1, :]
+
+        return result
 
     @staticmethod
     def _validate_data(data: dict) -> None:
         required_keys = ["traj_robot", "traj_obj", "start_robot", "start_obj"]
         for key in required_keys:
             if key not in data:
-                raise KeyError(f"Missing required key '{key}' in trajectory data. Found keys: {list(data.keys())}")
-        assert data["traj_robot"].dim() == 3, f"traj_robot must be 3D [N, T, J], got shape {data['traj_robot'].shape}"
-        assert data["traj_obj"].dim() == 3, f"traj_obj must be 3D [N, T, J], got shape {data['traj_obj'].shape}"
+                raise KeyError(
+                    f"Missing required key '{key}' in trajectory data. "
+                    f"Found keys: {list(data.keys())}"
+                )
+        assert data["traj_robot"].dim() == 3, (
+            f"traj_robot must be 3D [N, T, J], got shape {data['traj_robot'].shape}"
+        )
+        assert data["traj_obj"].dim() == 3, (
+            f"traj_obj must be 3D [N, T, J], got shape {data['traj_obj'].shape}"
+        )
 
     @property
     def n_steps(self) -> int:
-        """Number of steps in the current episode."""
+        """Number of (effective) steps in the current episode."""
         return self._n_steps
+
+    @property
+    def n_raw_steps(self) -> int:
+        """Number of raw (un-interpolated) steps per episode."""
+        return self._n_raw_steps
 
     @property
     def n_episodes(self) -> int:
@@ -186,49 +253,48 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         """
         Get the action for the current step.
 
-        In **drive mode**, returns the target joint positions as actions (shape matches
-        the environment action space).
-
-        In **set-state mode**, directly writes joint positions into the simulator
-        and returns a zero action (the state is already set).
+        Always returns the trajectory joint positions as the action tensor (so
+        the recorder captures correct values).  In set-state mode the joint
+        states are additionally written directly into the simulator.
 
         Args:
             env: The gymnasium environment.
             observation: Current observation dict.
 
         Returns:
-            Action tensor. In set_state mode this is zeros (state already written).
-            Returns None when the episode is finished.
+            Action tensor of shape ``(1, action_dim)``.
         """
+        unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+        dev = torch.device(unwrapped.device)
+
         if self._current_step >= self._n_steps:
             # Episode finished — return zeros to keep env alive
-            return torch.zeros(env.action_space.shape, device=torch.device(env.unwrapped.device))
+            return torch.zeros(env.action_space.shape, device=dev)
 
-        robot_target = self._traj_robot[self._episode_index, self._current_step]
+        robot_target = self._traj_robot[self._episode_index, self._current_step].clone()
         obj_target = self._traj_obj[self._episode_index, self._current_step]
 
         if self.set_state:
             # Directly set joint states — bypass physics
             self._set_robot_joint_state(env, robot_target)
             self._set_object_joint_state(env, obj_target)
-            self._current_step += 1
-            # Return zero action since state is already set
-            return torch.zeros(env.action_space.shape, device=torch.device(env.unwrapped.device))
-        else:
-            # Drive mode — return joint positions as action targets
-            self._current_step += 1
-            action = robot_target.unsqueeze(0).to(env.unwrapped.device)
-            # If action space is larger/smaller, pad/trim
-            expected_dim = env.action_space.shape[-1]
-            if action.shape[-1] < expected_dim:
-                action = torch.nn.functional.pad(action, (0, expected_dim - action.shape[-1]))
-            elif action.shape[-1] > expected_dim:
-                action = action[..., :expected_dim]
-            return action
+
+        # Build the action tensor (absolute joint positions)
+        action = robot_target.unsqueeze(0).to(dev)
+
+        # Pad/trim to match action space
+        expected_dim = env.action_space.shape[-1]
+        if action.shape[-1] < expected_dim:
+            action = torch.nn.functional.pad(action, (0, expected_dim - action.shape[-1]))
+        elif action.shape[-1] > expected_dim:
+            action = action[..., :expected_dim]
+
+        self._current_step += 1
+        return action
 
     def _set_robot_joint_state(self, env: gym.Env, joint_positions: torch.Tensor) -> None:
         """Directly set robot joint positions and zero velocities."""
-        unwrapped = env.unwrapped
+        unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
         robot = unwrapped.scene["robot"]
         n_joints = min(joint_positions.shape[0], robot.num_joints)
         joint_pos = joint_positions[:n_joints].unsqueeze(0).to(unwrapped.device)
@@ -237,20 +303,33 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
 
     def _set_object_joint_state(self, env: gym.Env, joint_positions: torch.Tensor) -> None:
         """Directly set object (articulation) joint positions and zero velocities."""
-        unwrapped = env.unwrapped
-        # Find the object articulation in the scene
-        # Convention: the first non-robot articulation is the target object
+        unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
         for key in unwrapped.scene.keys():
             if key == "robot":
                 continue
             entity = unwrapped.scene[key]
-            # Check if this is an articulation with joints
             if hasattr(entity, "write_joint_state_to_sim") and hasattr(entity, "num_joints"):
                 n_joints = min(joint_positions.shape[0], entity.num_joints)
                 joint_pos = joint_positions[:n_joints].unsqueeze(0).to(unwrapped.device)
                 joint_vel = torch.zeros_like(joint_pos)
                 entity.write_joint_state_to_sim(joint_pos, joint_vel)
                 break
+
+    def set_initial_state(self, env: gym.Env) -> None:
+        """Set the robot and object to the trajectory's starting state.
+
+        Useful in **drive mode** to teleport the robot to the correct start
+        configuration before physics-driven replay begins.
+        """
+        self._set_robot_joint_state(env, self.get_start_robot_joints())
+        self._set_object_joint_state(env, self.get_start_obj_joints())
+
+        unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+        # Flush the state to the sim and let it settle
+        unwrapped.scene.write_data_to_sim()
+        if hasattr(unwrapped.sim, "render"):
+            unwrapped.sim.render()
+        unwrapped.scene.update(unwrapped.physics_dt)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset the step counter for the current episode."""

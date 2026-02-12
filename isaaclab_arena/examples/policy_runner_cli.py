@@ -126,6 +126,24 @@ def add_replay_automoma_arguments(parser: argparse.ArgumentParser) -> None:
         default=True,
         help="Only replay episodes marked as successful in the trajectory file. Default: True.",
     )
+    automoma_group.add_argument(
+        "--interpolated",
+        type=int,
+        default=1,
+        help=(
+            "Interpolation factor for smoothing trajectories.  1 = no interpolation. "
+            "4 = insert 3 intermediate frames between each pair of keyframes."
+        ),
+    )
+    automoma_group.add_argument(
+        "--mobile_base_relative",
+        action="store_true",
+        default=False,
+        help=(
+            "If set, return base actions as relative deltas instead of absolute positions. "
+            "Arm and gripper remain absolute."
+        ),
+    )
 
 
 def setup_policy_argument_parser(args_parser: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
@@ -199,6 +217,8 @@ def create_policy(args: argparse.Namespace) -> tuple[PolicyBase, int]:
             set_state=args.set_state,
             device=args.device,
             only_successful=args.only_successful,
+            interpolation_factor=getattr(args, "interpolated", 1),
+            mobile_base_relative=getattr(args, "mobile_base_relative", False),
         )
         # Total steps = steps_per_episode * num_episodes
         num_episodes = getattr(args, "num_episodes", 1)
