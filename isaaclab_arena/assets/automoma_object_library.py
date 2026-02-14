@@ -53,7 +53,7 @@ class AutomomaOpenableObject(Object, Openable):
         **kwargs,
     ):
         usd_path = str(
-            _AUTOMOMA_ASSETS_ROOT / "object" / f"{asset_type.lower()}_{asset_id}" / f"{asset_id}_0_scaling" / f"{asset_id}_0_scaling.usd"
+            _AUTOMOMA_ASSETS_ROOT / "object" / f"{asset_type.lower()}_{asset_id}" / f"mobility" / f"mobility.usd"
         )
         if not os.path.exists(usd_path):
             raise FileNotFoundError(

@@ -100,6 +100,7 @@ class SummitFrankaSceneCfg:
             },
             joint_vel={".*": 0.0},
         ),
+        # TODO(walker): adjust stiffness and damping
         actuators={
             "base": ImplicitActuatorCfg(
                 joint_names_expr=["base_x", "base_y", "base_z"],
@@ -119,8 +120,8 @@ class SummitFrankaSceneCfg:
                 joint_names_expr=["panda_finger_joint.*"],
                 effort_limit=20.0,
                 velocity_limit=0.2,
-                stiffness=2e3,
-                damping=1e2,
+                stiffness=2e3,  # gripper needs higher stiffness to maintain the grasp
+                damping=1e2, # bigger damping to avoid oscillations
             ),
         },
     )

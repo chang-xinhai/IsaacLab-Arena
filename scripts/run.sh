@@ -1,5 +1,6 @@
 # docs/pages/example_workflows/summit_franka_manipulation/step_1_environment_setup.rst
 python isaaclab_arena/examples/policy_runner.py \
+  --device cpu \
   --enable_cameras \
   --num_steps 1000000 \
   --policy_type zero_action \
@@ -8,6 +9,15 @@ python isaaclab_arena/examples/policy_runner.py \
   --scene_name scene_0_seed_0 \
   --object_center
 
+python isaaclab_arena/examples/policy_runner.py \
+  --device cpu \
+  --enable_cameras \
+  --num_steps 1000000 \
+  --policy_type zero_action \
+  gr1_open_microwave \
+  --embodiment gr1_joint
+
+git clone -b main https://github.com/moveit/moveit2_tutorials
 
 python isaaclab_arena/examples/policy_runner.py \
   --headless \
@@ -46,6 +56,25 @@ python isaaclab_arena/scripts/record_automoma_demos.py \
   --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
   --dataset_file data/automoma/summit_franka_open_microwave_7221_drive.hdf5 \
   --num_episodes 30 \
+  summit_franka_open_door \
+  --object_name microwave_7221 \
+  --scene_name scene_0_seed_0 \
+  --object_center
+
+python isaaclab_arena/scripts/record_automoma_demos.py \
+  --enable_cameras \
+  --interpolated 4 --mobile_base_relative \
+  --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
+  --dataset_file data/automoma/summit_franka_open_microwave_7221_drive.hdf5 \
+  --num_episodes 30 \
+  summit_franka_open_door \
+  --object_name microwave_7221 \
+  --scene_name scene_0_seed_0 \
+  --object_center
+
+python scripts/debug/test_collision_meshes.py \
+  --enable_cameras \
+  --traj_file res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data.pt \
   summit_franka_open_door \
   --object_name microwave_7221 \
   --scene_name scene_0_seed_0 \

@@ -61,18 +61,19 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         # ---- Load scene background ----
         background = get_automoma_scene(scene_name)
 
-        # ---- Load object ----
-        target_object = get_automoma_object(
-            asset_type=asset_type_capitalized,
-            asset_id=asset_id,
-        )
-
         # ---- Read object pose from scene metadata ----
         metadata = load_scene_metadata(scene_name)
         object_pose, object_scale = get_object_pose_from_metadata(
             metadata,
             asset_type=asset_type_capitalized,
             asset_id=asset_id,
+        )
+
+        # ---- Load object ----
+        target_object = get_automoma_object(
+            asset_type=asset_type_capitalized,
+            asset_id=asset_id,
+            scale=object_scale,
         )
 
         # Keep original pose for robot placement in object_center mode

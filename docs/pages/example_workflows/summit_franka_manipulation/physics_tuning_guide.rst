@@ -125,6 +125,8 @@ These define PD controller gains for implicit actuators:
 These are set via the USD file or programmatically through
 ``ArticulationCfg`` / ``RigidObjectCfg``.
 
+# https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.sim.schemas.html#isaaclab.sim.schemas.RigidBodyPropertiesCfg
+# https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.ArticulationCfg
 
 2.1 Friction
 ^^^^^^^^^^^^
