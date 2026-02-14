@@ -287,7 +287,11 @@ def main():
     # 1) Deactivate duplicate object prims baked into the background scene USD
     object_name = getattr(args_cli, "object_name", None)
     if object_name:
-        deactivate_prims_by_name(object_name)
+        deactivate_prims_by_name(
+            object_name,
+            exclude_paths=(),
+            required_path_substrings=("/scene/",),
+        )
 
     # 2) Set lighting to grey mode (mode 2)
     set_lighting_mode(2)
@@ -318,6 +322,8 @@ def main():
 
     # ---- Initial reset ----
     obs, _ = env.reset()
+    if args_cli.disable_collision:
+        disable_all_collisions()
     # Fix first-frame camera lag: force a render + recompute observations
     obs = sync_cameras_after_reset(env)
 

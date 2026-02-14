@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import torch
 from collections.abc import Sequence
 from pathlib import Path
@@ -39,9 +40,12 @@ from isaaclab_arena.embodiments.embodiment_base import EmbodimentBase
 from isaaclab_arena.embodiments.franka.observations import gripper_pos
 from isaaclab_arena.utils.pose import Pose
 
-# Path to the summit_franka USD
+# Path to the summit_franka USD.
+# Override via AUTOMOMA_ROBOT_ROOT environment variable.
+_DEFAULT_ROBOT_ROOT = Path(__file__).resolve().parents[3] / "res_for_custom" / "automoma_assets" / "robot"
+_ROBOT_ROOT = Path(os.environ.get("AUTOMOMA_ROBOT_ROOT", str(_DEFAULT_ROBOT_ROOT)))
 _SUMMIT_FRANKA_USD_PATH = str(
-    Path(__file__).resolve().parents[3] / "res_for_custom" / "automoma_assets" / "robot" / "summit_franka" / "summit_franka" / "summit_franka.usd"
+    _ROBOT_ROOT / "summit_franka" / "summit_franka" / "summit_franka.usd"
 )
 
 # Default joint positions for summit_franka:

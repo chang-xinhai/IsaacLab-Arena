@@ -265,7 +265,11 @@ def main():
     env = gym.make(env_name, cfg=env_cfg).unwrapped
 
     # Keep same post-creation behavior as recording pipeline.
-    deactivate_prims_by_name(args_cli.object_name)
+    deactivate_prims_by_name(
+        args_cli.object_name,
+        exclude_paths=(),
+        required_path_substrings=("/scene/",),
+    )
     set_lighting_mode(2)
 
     obs, _ = env.reset()

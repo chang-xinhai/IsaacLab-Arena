@@ -21,7 +21,11 @@ if TYPE_CHECKING:
     import gymnasium as gym
 
 
-def deactivate_prims_by_name(name_pattern: str, exclude_paths: tuple[str, ...] = ("/World/envs",)) -> list[str]:
+def deactivate_prims_by_name(
+    name_pattern: str,
+    exclude_paths: tuple[str, ...] = (),
+    required_path_substrings: tuple[str, ...] = (),
+) -> list[str]:
     """Deactivate all prims in the USD stage whose **name** contains ``name_pattern``.
 
     The match is case-insensitive.  Only the prim's own name (the last segment
@@ -33,7 +37,10 @@ def deactivate_prims_by_name(name_pattern: str, exclude_paths: tuple[str, ...] =
 
     Args:
         name_pattern: Substring to search for in prim names (case-insensitive).
-        exclude_paths: Tuple of prim path prefixes to skip (e.g., "/World/envs").
+        exclude_paths: Tuple of prim path prefixes to skip.
+        required_path_substrings: Optional tuple of substrings.  If provided,
+            only prims whose full path contains at least one of these
+            substrings are considered for deactivation.
 
     Returns:
         List of prim paths that were deactivated.
@@ -54,6 +61,10 @@ def deactivate_prims_by_name(name_pattern: str, exclude_paths: tuple[str, ...] =
         for prefix in exclude_paths:
             if prim_path_str.startswith(prefix):
                 return
+        if required_path_substrings and not any(s in prim_path_str for s in required_path_substrings):
+            for child in prim.GetChildren():
+                _walk(child)
+            return
         prim_name = prim.GetName().lower()
         if pattern_lower in prim_name:
             prim.SetActive(False)
@@ -169,11 +180,23 @@ def disable_collision_for_prim_and_descendants(prim_path: str) -> int:
         if prim.HasAPI(UsdPhysics.CollisionAPI):
             UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
             changed = True
+        else:
+            # Fallback: some assets expose the attribute without applied schema
+            attr = prim.GetAttribute("physics:collisionEnabled")
+            if attr.IsValid():
+                attr.Set(False)
+                changed = True
 
         # 2. Disable PhysxSchema.PhysxCollisionAPI
         if prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
             PhysxSchema.PhysxCollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
             changed = True
+        else:
+            # Fallback: some assets expose the attribute without applied schema
+            attr = prim.GetAttribute("physxCollision:collisionEnabled")
+            if attr.IsValid():
+                attr.Set(False)
+                changed = True
 
         # 3. Disable UsdPhysics.MeshCollisionAPI
         if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
@@ -273,19 +296,47 @@ def disable_all_collisions() -> int:
         return 0
 
     total_changed = 0
+    api_hits = 0
+    attr_hits = 0
     for prim in Usd.PrimRange(stage.GetPseudoRoot()):
         changed = False
+        
+        print(f"Checking prim: {prim.GetPath()}")  # Debug log to trace which prims are checked
 
         if prim.HasAPI(UsdPhysics.CollisionAPI):
             UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            api_hits += 1
             changed = True
+        else:
+            attr = prim.GetAttribute("physics:collisionEnabled")
+            if attr.IsValid():
+                attr.Set(False)
+                attr_hits += 1
+                changed = True
+                print("attr", attr.GetPath())
 
         if prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
             PhysxSchema.PhysxCollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            api_hits += 1
             changed = True
+        else:
+            attr = prim.GetAttribute("physxCollision:collisionEnabled")
+            if attr.IsValid():
+                attr.Set(False)
+                attr_hits += 1
+                changed = True
+                print("Phy_attr", attr.GetPath())
 
         if changed:
             total_changed += 1
 
-    print(f"[disable_all_collisions] Disabled collision on {total_changed} prims in entire stage.")
+    print(
+        "[disable_all_collisions] Disabled collision on "
+        f"{total_changed} prims in entire stage (api_hits={api_hits}, attr_hits={attr_hits})."
+    )
+    if total_changed == 0:
+        print(
+            "[disable_all_collisions] Warning: no collision-enabled APIs/attrs found. "
+            "If this is unexpected, call this after env.reset() when runtime prims are fully initialized."
+        )
     return total_changed

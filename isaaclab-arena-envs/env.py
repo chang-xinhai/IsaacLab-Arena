@@ -210,7 +210,13 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         if object_name:
             from isaaclab_arena.utils.sim_utils import deactivate_prims_by_name
 
-            deactivate_prims_by_name(object_name)
+            # Search inside env scene subtree for duplicated baked geometry.
+            # We intentionally do not exclude /World/envs here.
+            deactivate_prims_by_name(
+                object_name,
+                exclude_paths=(),
+                required_path_substrings=("/scene/",),
+            )
 
         # 2) Set lighting mode to match recording behavior (default: grey mode = 2)
         lighting_mode = config.get("lighting_mode", 2)

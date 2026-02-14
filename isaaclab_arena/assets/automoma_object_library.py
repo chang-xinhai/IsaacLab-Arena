@@ -21,8 +21,11 @@ from isaaclab_arena.assets.object_base import ObjectType
 from isaaclab_arena.assets.register import register_asset
 from isaaclab_arena.utils.pose import Pose
 
-# Root of the automoma assets relative to the project root
-_AUTOMOMA_ASSETS_ROOT = Path(__file__).resolve().parents[2] / "res_for_custom" / "automoma_assets"
+# Root directories for automoma assets.
+# Override via environment variables to point to an external assets directory.
+_DEFAULT_ASSETS_ROOT = Path(__file__).resolve().parents[2] / "res_for_custom" / "automoma_assets"
+_AUTOMOMA_OBJECT_ROOT = Path(os.environ.get("AUTOMOMA_OBJECT_ROOT", str(_DEFAULT_ASSETS_ROOT / "object")))
+_AUTOMOMA_SCENE_ROOT = Path(os.environ.get("AUTOMOMA_SCENE_ROOT", str(_DEFAULT_ASSETS_ROOT / "scene")))
 
 
 class AutomomaOpenableObject(Object, Openable):
@@ -52,13 +55,19 @@ class AutomomaOpenableObject(Object, Openable):
         openable_open_threshold: float | None = None,
         **kwargs,
     ):
-        usd_path = str(
-            _AUTOMOMA_ASSETS_ROOT / "object" / f"{asset_type.lower()}_{asset_id}" / f"mobility" / f"mobility.usd"
-        )
-        if not os.path.exists(usd_path):
+        # Try new layout first: {root}/{Type}/{id}/mobility/mobility.usd
+        # Fallback to legacy layout: {root}/{type_lower}_{id}/mobility/mobility.usd
+        new_usd_path = _AUTOMOMA_OBJECT_ROOT / asset_type / asset_id / "mobility" / "mobility.usd"
+        legacy_usd_path = _AUTOMOMA_OBJECT_ROOT / f"{asset_type.lower()}_{asset_id}" / "mobility" / "mobility.usd"
+        if new_usd_path.exists():
+            usd_path = str(new_usd_path)
+        elif legacy_usd_path.exists():
+            usd_path = str(legacy_usd_path)
+        else:
             raise FileNotFoundError(
-                f"USD file not found for automoma object {name}: {usd_path}. "
-                "Make sure the asset exists under res_for_custom/automoma_assets/object/."
+                f"USD file not found for automoma object {name}. "
+                f"Searched:\n  {new_usd_path}\n  {legacy_usd_path}\n"
+                "Set AUTOMOMA_OBJECT_ROOT env var or ensure the asset exists."
             )
         if openable_joint_name is None:
             openable_joint_name = self.openable_joint_name
@@ -145,9 +154,12 @@ def load_scene_metadata(scene_name: str) -> dict:
     Returns:
         The parsed metadata dict.
     """
-    metadata_path = _AUTOMOMA_ASSETS_ROOT / "scene" / scene_name / "info" / "metadata.json"
+    metadata_path = _AUTOMOMA_SCENE_ROOT / scene_name / "info" / "metadata.json"
     if not metadata_path.exists():
-        raise FileNotFoundError(f"Scene metadata not found: {metadata_path}")
+        raise FileNotFoundError(
+            f"Scene metadata not found: {metadata_path}. "
+            "Set AUTOMOMA_SCENE_ROOT env var or ensure the scene exists."
+        )
     with open(metadata_path, "r") as f:
         return json.load(f)
 

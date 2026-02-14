@@ -17,8 +17,10 @@ from isaaclab_arena.assets.background import Background
 from isaaclab_arena.assets.register import register_asset
 from isaaclab_arena.utils.pose import Pose
 
-# Root of the automoma assets relative to the project root
-_AUTOMOMA_ASSETS_ROOT = Path(__file__).resolve().parents[2] / "res_for_custom" / "automoma_assets"
+# Root directory for automoma scene assets.
+# Override via AUTOMOMA_SCENE_ROOT environment variable.
+_DEFAULT_ASSETS_ROOT = Path(__file__).resolve().parents[2] / "res_for_custom" / "automoma_assets"
+_AUTOMOMA_SCENE_ROOT = Path(os.environ.get("AUTOMOMA_SCENE_ROOT", str(_DEFAULT_ASSETS_ROOT / "scene")))
 
 
 class AutomomaSceneBackground(Background):
@@ -38,12 +40,12 @@ class AutomomaSceneBackground(Background):
         **kwargs,
     ):
         usdc_path = str(
-            _AUTOMOMA_ASSETS_ROOT / "scene" / scene_name / "export" / "export_scene.blend" / "export_scene.usdc"
+            _AUTOMOMA_SCENE_ROOT / scene_name / "export" / "export_scene.blend" / "export_scene.usdc"
         )
         if not os.path.exists(usdc_path):
             raise FileNotFoundError(
                 f"USDC file not found for automoma scene {scene_name}: {usdc_path}. "
-                "Make sure the scene exists under res_for_custom/automoma_assets/scene/."
+                "Set AUTOMOMA_SCENE_ROOT env var or ensure the scene exists."
             )
         if initial_pose is None:
             initial_pose = Pose.identity()
