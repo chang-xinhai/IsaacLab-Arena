@@ -132,8 +132,10 @@ parser.add_argument(
     action="store_true",
     default=False,
     help=(
-        "If set, disable collision on the spawned robot and target object prims "
-        "(and their descendants) for collision-free recording."
+        "If set, disable ALL collisions in the entire simulation stage. "
+        "This prevents any physics-based contact responses, which is useful "
+        "for set-state recording where planner trajectories may cause "
+        "interpenetration."
     ),
 )
 
@@ -163,7 +165,7 @@ from isaaclab_arena.embodiments.summit_franka.summit_franka import SummitFrankaJ
 from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
 from isaaclab_arena.utils.sim_utils import (
     deactivate_prims_by_name,
-    disable_collision_for_env,
+    disable_all_collisions,
     set_lighting_mode,
     sync_cameras_after_reset,
 )
@@ -270,6 +272,11 @@ def main():
     env_cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_ALL
     # Don't time-out — we control episode length via the trajectory
     env_cfg.terminations.time_out = None
+    # Also disable the success termination — in drive mode with interpolation,
+    # the door may open past the threshold mid-trajectory, which would trigger
+    # an auto-reset and snap the robot back to default pose.
+    if hasattr(env_cfg.terminations, "success"):
+        env_cfg.terminations.success = None
     env_cfg.observations.policy.concatenate_terms = False
 
     import gymnasium as gym
@@ -285,9 +292,9 @@ def main():
     # 2) Set lighting to grey mode (mode 2)
     set_lighting_mode(2)
 
-    # 3) Optionally disable collision for robot and target object
+    # 3) Optionally disable ALL collisions in the simulation
     if args_cli.disable_collision:
-        disable_collision_for_env(env, object_name)
+        disable_all_collisions()
 
     # ---- Create replay policy ----
     policy = ReplayAutomomaTrajectoryPolicy(

@@ -124,11 +124,22 @@ The recording script supports several options that affect the output HDF5:
   the recorded demo exactly follows the planner's trajectory.
 - ``--interpolated X``: Linearly interpolate between trajectory keyframes by
   factor X (default 1 = none). E.g. ``--interpolated 4`` produces 4x more frames,
-  yielding smoother motion in set-state mode.
+  yielding smoother motion. Both set-state and drive modes support interpolation.
 - ``--mobile_base_relative``: Store base actions as relative deltas (Δx, Δy, Δθ)
   instead of absolute positions. Arm / gripper remain absolute. This is the
   recommended format for policy training — the policy learns "move forward a bit"
   which generalises better than "go to world coordinate (x, y)".
+- ``--disable_collision``: Disable **all** collisions in the entire simulation
+  stage. This is useful for set-state recording where planner trajectories may
+  cause interpenetration. In drive mode, collisions are typically left enabled
+  since physics-based contacts are part of the demonstration.
+
+.. note::
+
+   **Drive mode with interpolation**: The recording script automatically disables
+   both the ``time_out`` and ``success`` termination terms during recording. This
+   prevents the environment from auto-resetting mid-trajectory when the door opens
+   past the success threshold (which would snap the robot back to its default pose).
 
 **Action space convention**
 

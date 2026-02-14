@@ -196,10 +196,10 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         from isaaclab_arena.utils.sim_utils import set_lighting_mode
         set_lighting_mode(int(lighting_mode))
 
-    # 3) Optionally disable collision for robot and target object
+    # 3) Optionally disable ALL collisions in the simulation
     if config.get("disable_collision", False):
-        from isaaclab_arena.utils.sim_utils import disable_collision_for_env
-        disable_collision_for_env(raw_env, object_name)
+        from isaaclab_arena.utils.sim_utils import disable_all_collisions
+        disable_all_collisions()
 
     # Set render_mode on underlying env
     if render_mode and hasattr(raw_env, "render_mode"):
@@ -236,6 +236,10 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     base_dof = config.get("base_dof", 3)
     state_key = config.get("state_key", "joint_pos")
 
+    # Check for trajectory-based initial state (for evaluation)
+    traj_file = config.get("traj_file", None)
+    traj_seed = config.get("traj_seed", 42)
+
     # Wrap and return
     wrapped_env = IsaacLabEnvWrapper(
         raw_env,
@@ -246,6 +250,8 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         mobile_base_relative=mobile_base_relative,
         base_dof=base_dof,
         state_key=state_key,
+        traj_file=traj_file,
+        traj_seed=traj_seed,
     )
     logging.info(f"Created: {environment} with {wrapped_env.num_envs} envs, render_mode={render_mode}")
 

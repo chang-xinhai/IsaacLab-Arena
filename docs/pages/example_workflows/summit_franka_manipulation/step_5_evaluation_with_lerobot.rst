@@ -165,11 +165,20 @@ Step 3: Run lerobot-eval
      --env.camera_height=240 \
      --env.camera_width=320 \
      --env.episode_length=300 \
-     --env.kwargs='{"object_name": "microwave_7221", "scene_name": "scene_0_seed_0", "object_center": true, "disable_collision": true, "mobile_base_relative": true}' \
+     --env.kwargs='{"object_name": "microwave_7221", "scene_name": "scene_0_seed_0", "object_center": true, "disable_collision": true, "mobile_base_relative": true, "traj_file": "res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data_test.pt", "traj_seed": 42}' \
      --rename_map='{"observation.images.ego_topdown_rgb": "observation.images.ego_topdown", "observation.images.ego_wrist_rgb": "observation.images.ego_wrist", "observation.images.fix_local_rgb": "observation.images.fix_local"}' \
      --trust_remote_code=true \
      --eval.batch_size=1 \
      --eval.n_episodes=10
+
+.. important::
+
+   **Initial state from trajectory file**: Unlike standard benchmarks where the
+   robot always starts at the same pose, automoma tasks require different initial
+   states per episode (the planner places the robot at different positions relative
+   to the object). The ``traj_file`` kwarg loads start states from a ``.pt`` file
+   and teleports the robot/object at the beginning of each episode. The ``traj_seed``
+   kwarg controls the random sampling order for reproducibility.
 
 
 Parameter Reference
@@ -253,9 +262,10 @@ environment. These are promoted to CLI arguments of the environment class:
        training data setup).
    * - ``disable_collision``
      - bool
-     - Disables collision between robot and object. Useful for set-state
-       recordings or when large action jumps cause interpenetration.
-       See :doc:`physics_tuning_guide` §8.
+     - Disables **all** collisions in the entire simulation stage.
+       Every prim with ``CollisionAPI`` or ``PhysxCollisionAPI`` is disabled.
+       Useful for set-state recordings or when policy actions cause
+       interpenetration.
    * - ``mobile_base_relative``
      - bool
      - If ``true``, the first ``base_dof`` (default 3) action dimensions are
@@ -263,6 +273,18 @@ environment. These are promoted to CLI arguments of the environment class:
        with the current base state before sending absolute positions to sim.
        Must match the recording mode (``--mobile_base_relative`` flag during
        ``record_automoma_demos.py``).
+   * - ``traj_file``
+     - str
+     - Path to a ``.pt`` trajectory file for setting initial robot/object
+       states at the beginning of each evaluation episode. On each ``reset()``,
+       a random episode is sampled from this file and the robot+object are
+       teleported to the corresponding start positions. This is essential for
+       automoma tasks where the robot's starting pose varies per episode
+       (unlike standard benchmarks where the initial state is always the same).
+   * - ``traj_seed``
+     - int
+     - Random seed for sampling episodes from ``traj_file`` (default: 42).
+       Ensures reproducible evaluation across runs.
 
 
 Rename Map Explained
@@ -426,7 +448,7 @@ For reference, the full pipeline from recording to evaluation:
      --dataset.preload_cache=true \
      --dataset.filter_features_by_policy=true
 
-   # 4. Evaluate with lerobot-eval
+   # 4. Evaluate with lerobot-eval (with traj-based initial state)
    lerobot-eval \
      --policy.path=../lerobot/outputs/train/act_$exp_name/checkpoints/010000/pretrained_model \
      --policy.device=cuda \
@@ -442,11 +464,112 @@ For reference, the full pipeline from recording to evaluation:
      --env.camera_height=240 \
      --env.camera_width=320 \
      --env.episode_length=300 \
-     --env.kwargs='{"object_name": "microwave_7221", "scene_name": "scene_0_seed_0", "object_center": true, "disable_collision": true, "mobile_base_relative": true}' \
+     --env.kwargs='{"object_name": "microwave_7221", "scene_name": "scene_0_seed_0", "object_center": true, "disable_collision": true, "mobile_base_relative": true, "traj_file": "res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data_test.pt", "traj_seed": 42}' \
      --rename_map='{"observation.images.ego_topdown_rgb": "observation.images.ego_topdown", "observation.images.ego_wrist_rgb": "observation.images.ego_wrist", "observation.images.fix_local_rgb": "observation.images.fix_local"}' \
      --trust_remote_code=true \
      --eval.batch_size=1 \
      --eval.n_episodes=10
+
+
+Understanding Success Criteria
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+During evaluation, **lerobot-eval** reports ``is_success`` for each episode. The
+success signal flows through several layers:
+
+.. code-block:: text
+
+   IsaacLabEnvWrapper._get_success()
+        │
+        ▼
+   termination_manager.get_term("success")
+        │
+        ▼
+   OpenDoorTask → openable_object.is_open(env, threshold=...)
+        │
+        ▼
+   Openable.get_openness(env) > threshold
+
+**How it works step by step:**
+
+1. ``OpenDoorTask`` (in ``isaaclab_arena/tasks/open_door_task.py``) creates a
+   ``success`` termination term using ``openable_object.is_open()``.
+
+2. ``Openable.is_open()`` (in ``isaaclab_arena/affordances/openable.py``) reads
+   the normalized joint position of the door hinge and checks if
+   ``openness > threshold``.
+
+3. The wrapper's ``_get_success()`` method queries ``termination_manager.get_term("success")``
+   each step. When the door openness exceeds the threshold, the termination fires and
+   the episode is marked as successful.
+
+4. **Default threshold**: The ``OpenDoorTask`` is constructed with
+   ``openness_threshold=0.8`` (80% open) in the environment class. This means the
+   door must open to at least 80% of its full range for the episode to count as
+   successful.
+
+**How to modify the success criteria:**
+
+To change when an episode is considered successful, follow these steps:
+
+1. **Change the openness threshold** (simplest):
+
+   Edit ``isaaclab_arena/examples/example_environments/summit_franka_open_door_environment.py``.
+   In the ``get_env()`` method, find the ``OpenDoorTask`` constructor:
+
+   .. code-block:: python
+
+      task = OpenDoorTask(
+          target_object,
+          openness_threshold=0.8,   # ← Change this value
+          reset_openness=0.3,
+          episode_length_s=2.0,
+      )
+
+   For example, set ``openness_threshold=0.5`` to succeed when the door is 50% open.
+
+   You can also pass the threshold at runtime via ``--env.kwargs``:
+
+   .. code-block:: python
+
+      # In summit_franka_open_door_eval_environment.py, read from args:
+      openness_threshold = getattr(args_cli, "openness_threshold", 0.8)
+      # Then pass to OpenDoorTask(... openness_threshold=openness_threshold ...)
+
+2. **Use a custom angle-based criterion** (e.g., "door opened > N degrees"):
+
+   a. Read the raw (un-normalized) joint position in radians:
+
+      .. code-block:: python
+
+         # In a new termination function:
+         def door_angle_exceeds(env, asset_cfg, min_angle_rad: float = 0.5):
+             asset = env.scene[asset_cfg.name]
+             joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+             return joint_pos.squeeze(-1).abs() > min_angle_rad
+
+   b. Register it as the ``success`` termination term in ``OpenDoorTask.make_termination_cfg()``.
+
+   c. Adjust the ``TerminationTermCfg`` to use your function:
+
+      .. code-block:: python
+
+         success = TerminationTermCfg(
+             func=door_angle_exceeds,
+             params={"min_angle_rad": 0.785, "asset_cfg": SceneEntityCfg(self.openable_object.name)},
+         )
+
+3. **Completely replace the success logic**:
+
+   Create a new task class inheriting from ``OpenDoorTask`` and override
+   ``make_termination_cfg()`` with any custom logic (e.g., combine door angle
+   with gripper contact, robot proximity, etc.).
+
+.. tip::
+
+   The ``is_open`` function uses **normalized** joint positions (0.0 = fully closed,
+   1.0 = fully open). If you want to use raw joint angles in radians or degrees,
+   read directly from ``asset.data.joint_pos`` instead.
 
 
 .. note::

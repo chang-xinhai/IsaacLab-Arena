@@ -245,3 +245,47 @@ def disable_collision_for_env(env: "gym.Env", object_name: str | None = None) ->
             total_changed += changed
 
     print(f"[disable_collision] Disabled collision on {total_changed} prims total.")
+
+
+def disable_all_collisions() -> int:
+    """Disable collision on **every** prim in the USD stage.
+
+    This is a brute-force approach that guarantees no collision responses
+    anywhere in the simulation.  Useful for set-state recording or evaluation
+    where physics-based contacts are unwanted.
+
+    The function traverses the entire USD stage and disables:
+
+    - ``UsdPhysics.CollisionAPI``
+    - ``PhysxSchema.PhysxCollisionAPI``
+
+    on every prim that has them.
+
+    Returns:
+        Number of prims whose collision was disabled.
+    """
+    import omni.usd
+    from pxr import PhysxSchema, Usd, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        print("[disable_all_collisions] Warning: USD stage is not available.")
+        return 0
+
+    total_changed = 0
+    for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+        changed = False
+
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            changed = True
+
+        if prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
+            PhysxSchema.PhysxCollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            changed = True
+
+        if changed:
+            total_changed += 1
+
+    print(f"[disable_all_collisions] Disabled collision on {total_changed} prims in entire stage.")
+    return total_changed

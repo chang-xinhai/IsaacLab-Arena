@@ -50,6 +50,8 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         mobile_base_relative: bool = False,
         base_dof: int = 3,
         state_key: str = "joint_pos",
+        traj_file: str | None = None,
+        traj_seed: int = 42,
     ):
         self._env = env
         self._num_envs = env.num_envs
@@ -62,6 +64,55 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         self._mobile_base_relative = mobile_base_relative
         self._base_dof = base_dof
         self._state_key = state_key
+
+        # Trajectory-based initial state for evaluation
+        self._traj_data = None
+        self._traj_rng = None
+        self._traj_n_episodes = 0
+        if traj_file and os.path.exists(traj_file):
+            data = torch.load(traj_file, map_location="cpu", weights_only=True)
+            # Validate required keys
+            for k in ("start_robot", "start_obj"):
+                if k not in data:
+                    logging.warning(
+                        f"[IsaacLabEnvWrapper] Trajectory file missing key '{k}', "
+                        f"initial state setting disabled."
+                    )
+                    data = None
+                    break
+            if data is not None:
+                # Filter to successful episodes if available
+                if "traj_success" in data:
+                    mask = data["traj_success"].bool()
+                    n_success = mask.sum().item()
+                    if n_success > 0:
+                        data["start_robot"] = data["start_robot"][mask]
+                        data["start_obj"] = data["start_obj"][mask]
+                        logging.info(
+                            f"[IsaacLabEnvWrapper] Loaded {n_success} successful "
+                            f"episodes from {traj_file}"
+                        )
+                    else:
+                        logging.warning(
+                            f"[IsaacLabEnvWrapper] No successful episodes in {traj_file}, "
+                            f"using all episodes."
+                        )
+                else:
+                    logging.info(
+                        f"[IsaacLabEnvWrapper] Loaded {data['start_robot'].shape[0]} "
+                        f"episodes from {traj_file} (no success filter)"
+                    )
+                self._traj_data = data
+                self._traj_n_episodes = data["start_robot"].shape[0]
+                self._traj_rng = np.random.RandomState(traj_seed)
+                logging.info(
+                    f"[IsaacLabEnvWrapper] Trajectory initial states enabled: "
+                    f"{self._traj_n_episodes} episodes, seed={traj_seed}"
+                )
+        elif traj_file:
+            logging.warning(
+                f"[IsaacLabEnvWrapper] Trajectory file not found: {traj_file}"
+            )
 
         self.observation_space = env.observation_space
         self.action_space = env.action_space
@@ -128,6 +179,10 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
             else:
                 raise
 
+        # Set initial state from trajectory data (for evaluation with varying start poses)
+        if self._traj_data is not None:
+            obs = self._set_initial_state_from_traj(obs)
+
         if "final_info" not in info:
             zeros = np.zeros(self._num_envs, dtype=bool)
             info["final_info"] = {"is_success": zeros}
@@ -157,6 +212,69 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
                 self._env.scene.update(dt)
         except Exception as exc:
             logging.warning(f"PhysX recovery: scene.update() failed: {exc}")
+
+    def _set_initial_state_from_traj(self, obs: dict) -> dict:
+        """Set robot and object to a randomly sampled trajectory start state.
+
+        Samples an episode index from the loaded trajectory data using the
+        seeded RNG, then teleports the robot and object joints to the
+        corresponding start positions.  After teleporting, a render pass
+        and observation recompute ensure fresh camera images.
+
+        Args:
+            obs: Current observation dict (will be replaced with fresh obs).
+
+        Returns:
+            Recomputed observation dict reflecting the new initial state.
+        """
+        # Sample a random episode index (reproducible via seeded RNG)
+        ep_idx = self._traj_rng.randint(0, self._traj_n_episodes)
+        start_robot = self._traj_data["start_robot"][ep_idx]
+        start_obj = self._traj_data["start_obj"][ep_idx]
+
+        dev = self._env.device
+
+        # Set robot joint state
+        if hasattr(self._env, "scene") and "robot" in self._env.scene.keys():
+            robot = self._env.scene["robot"]
+            n_joints = min(start_robot.shape[0], robot.num_joints)
+            joint_pos = start_robot[:n_joints].unsqueeze(0).to(dev)
+            joint_vel = torch.zeros_like(joint_pos)
+            robot.write_joint_state_to_sim(joint_pos, joint_vel)
+
+        # Set object joint state (first non-robot articulation in the scene)
+        if hasattr(self._env, "scene"):
+            for key in self._env.scene.keys():
+                if key == "robot":
+                    continue
+                entity = self._env.scene[key]
+                if hasattr(entity, "write_joint_state_to_sim") and hasattr(entity, "num_joints"):
+                    n_joints = min(start_obj.shape[0], entity.num_joints)
+                    joint_pos = start_obj[:n_joints].unsqueeze(0).to(dev)
+                    joint_vel = torch.zeros_like(joint_pos)
+                    entity.write_joint_state_to_sim(joint_pos, joint_vel)
+                    break
+
+        # Flush state to physics and re-render
+        if hasattr(self._env, "scene"):
+            self._env.scene.write_data_to_sim()
+        if hasattr(self._env, "sim"):
+            if hasattr(self._env.sim, "render"):
+                self._env.sim.render()
+            else:
+                self._env.sim.step(render=True)
+        if hasattr(self._env, "scene"):
+            self._env.scene.update(getattr(self._env, "physics_dt", 0.0))
+
+        # Recompute observations with fresh render
+        if hasattr(self._env, "observation_manager"):
+            obs = self._env.observation_manager.compute()
+            self._env.obs_buf = obs
+
+        logging.info(
+            f"[IsaacLabEnvWrapper] Set initial state from trajectory episode {ep_idx}"
+        )
+        return obs
 
     def step(
         self, actions: np.ndarray | torch.Tensor

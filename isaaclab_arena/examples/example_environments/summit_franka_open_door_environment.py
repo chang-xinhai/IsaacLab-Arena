@@ -185,11 +185,18 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         scene = Scene(assets=assets)
 
         # ---- Create the task ----
+        # task = OpenDoorTask(
+        #     target_object,
+        #     openness_threshold=0.8,
+        #     reset_openness=0.3,
+        #     episode_length_s=2.0,
+        # )
+        # TODO(walker): change task parameters
         task = OpenDoorTask(
             target_object,
-            openness_threshold=0.8,
-            reset_openness=0.3,
-            episode_length_s=2.0,
+            openness_threshold=0.3,
+            reset_openness=0.0,
+            episode_length_s=3.0,
         )
 
         # ---- Create the environment ----
