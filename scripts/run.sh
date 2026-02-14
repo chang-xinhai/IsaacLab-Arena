@@ -82,18 +82,11 @@ lerobot-eval \
      --env.camera_height=240 \
      --env.camera_width=320 \
      --env.episode_length=300 \
-     --env.kwargs='{"object_name": "microwave_7221", "scene_name": "scene_0_seed_0", "object_center": true, "mobile_base_relative": true, "traj_file": "res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0_imitation/traj_data_test.pt", "traj_seed": 42}' \
+     --env.kwargs='{"object_name": "microwave_7221", "scene_name": "scene_0_seed_0", "object_center": true, "mobile_base_relative": true, "traj_file": "res_for_custom/automoma_trajs/summit_franka/microwave_7221/scene_0_seed_0/traj_data_test.pt", "traj_seed": 42}' \
      --rename_map='{"observation.images.ego_topdown_rgb": "observation.images.ego_topdown", "observation.images.ego_wrist_rgb": "observation.images.ego_wrist", "observation.images.fix_local_rgb": "observation.images.fix_local"}' \
      --trust_remote_code=true \
      --eval.batch_size=1 \
-     --eval.n_episodes=50
-
-
-
-
-
-/World/envs/env_0/power_drill
-
+     --eval.n_episodes=10
 
 
 

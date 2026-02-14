@@ -153,6 +153,23 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     if config.get("enable_pinocchio", True):
         import pinocchio  # noqa: F401
 
+    # Prevent default LeRobot object from leaking into automoma open-door envs.
+    # IsaaclabArenaEnv defaults to object="power_drill", while
+    # summit_franka_open_door(_eval) already specifies the target via object_name.
+    # If we keep the default, the environment will spawn an unintended extra object.
+    environment_name = config.get("environment") or ""
+    if (
+        environment_name.startswith("summit_franka_open_door")
+        and config.get("object_name")
+        and config.get("object") == "power_drill"
+    ):
+        logging.info(
+            "Ignoring default object='power_drill' for %s because object_name=%s is set.",
+            environment_name,
+            config.get("object_name"),
+        )
+        config["object"] = None
+
     # Override num_envs
     config["num_envs"] = n_envs
 
