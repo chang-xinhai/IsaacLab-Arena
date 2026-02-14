@@ -43,6 +43,21 @@ Key components:
   produced by the automoma recording pipeline.
 
 
+Automoma Evaluation Notes
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For automoma evaluation (when ``traj_file`` is provided in ``--env.kwargs``),
+the env bridge applies the same scene post-fixes used in recording:
+
+1. Deactivate duplicate object prims by ``object_name``.
+2. Set lighting to grey mode by default (mode ``2``), unless overridden by
+  ``lighting_mode``.
+3. If ``disable_collision=true``, disable collisions globally.
+
+These hooks are intentionally gated by ``traj_file`` so default IsaacLab-Arena
+examples are not affected.
+
+
 Prerequisites
 ^^^^^^^^^^^^^
 
@@ -473,6 +488,48 @@ For reference, the full pipeline from recording to evaluation:
 
 Understanding Success Criteria
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Evaluation Call Flow (End-to-End)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The runtime path for ``lerobot-eval`` with ``--env.type=isaaclab_arena`` is:
+
+1. ``lerobot_eval.py::eval_main`` loads env and policy.
+2. ``lerobot.envs.factory.make_env`` detects ``hub_path`` and calls
+  ``isaaclab-arena-envs/env.py::make_env``.
+3. ``env.py::_create_isaaclab_env`` builds IsaacLab env, applies automoma
+  scene hooks (if ``traj_file`` is set), and wraps with ``IsaacLabEnvWrapper``.
+4. ``rollout()`` runs the loop:
+
+  a. ``observation = env.reset(...)``
+
+  b. ``observation -> IsaaclabArenaProcessorStep -> policy input``
+
+  c. ``action = policy.select_action(observation)``
+
+  d. ``env.step(action)``
+
+  e. read ``info["final_info"]["is_success"]`` for metrics
+
+5. ``eval_policy`` aggregates rewards/success over episodes and reports
+  ``pc_success``.
+
+
+What ``traj_file`` does (and does NOT do)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In the current evaluation implementation:
+
+- ``traj_file`` is read only inside ``IsaacLabEnvWrapper`` during init/reset.
+- On each ``reset()``, one trajectory episode index is sampled (seeded by
+  ``traj_seed``), and only ``start_robot`` / ``start_obj`` are used to set the
+  initial pose.
+- During stepping, actions come from ``policy.select_action(...)`` in
+  LeRobot's rollout loop, then passed to ``env.step(action)``.
+- No evaluation code path reads ``traj_robot`` / ``traj_obj`` to drive actions.
+
+Therefore, for eval, ``traj_file`` currently provides only initial state
+sampling; control execution is policy-driven, not replay-driven.
 
 During evaluation, **lerobot-eval** reports ``is_success`` for each episode. The
 success signal flows through several layers:

@@ -183,23 +183,29 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
 
     raw_env = env_builder.make_registered()
 
-    # ---- Post-creation scene hooks ----
-    # 1) Deactivate duplicate object prims baked into the background scene USD
-    object_name = config.get("object_name")
-    if object_name:
-        from isaaclab_arena.utils.sim_utils import deactivate_prims_by_name
-        deactivate_prims_by_name(object_name)
+    # ---- Post-creation scene hooks (automoma-only) ----
+    # Keep default IsaacLab-Arena examples unaffected.  We only apply these
+    # hooks when trajectory-based initial-state evaluation is enabled.
+    traj_file = config.get("traj_file")
+    if traj_file:
+        # 1) Deactivate duplicate object prims baked into the background scene USD
+        object_name = config.get("object_name")
+        if object_name:
+            from isaaclab_arena.utils.sim_utils import deactivate_prims_by_name
 
-    # 2) Set lighting mode (default: grey mode = 2)
-    lighting_mode = config.get("lighting_mode")
-    if lighting_mode is not None:
+            deactivate_prims_by_name(object_name)
+
+        # 2) Set lighting mode to match recording behavior (default: grey mode = 2)
+        lighting_mode = config.get("lighting_mode", 2)
         from isaaclab_arena.utils.sim_utils import set_lighting_mode
+
         set_lighting_mode(int(lighting_mode))
 
-    # 3) Optionally disable ALL collisions in the simulation
-    if config.get("disable_collision", False):
-        from isaaclab_arena.utils.sim_utils import disable_all_collisions
-        disable_all_collisions()
+        # 3) Optionally disable ALL collisions in the simulation
+        if config.get("disable_collision", False):
+            from isaaclab_arena.utils.sim_utils import disable_all_collisions
+
+            disable_all_collisions()
 
     # Set render_mode on underlying env
     if render_mode and hasattr(raw_env, "render_mode"):
