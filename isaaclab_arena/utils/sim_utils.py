@@ -8,7 +8,7 @@ Utility functions for IsaacSim scene manipulation.
 
 Provides helpers for:
 - Deactivating duplicate prims in the USD stage (e.g., objects baked into scene USDs)
-- Setting viewport lighting modes
+- Setting a repo-managed lighting rig that works in both GUI and headless runs
 - Syncing camera observations after resets
 - Disabling collision on prims for collision-free recording/evaluation
 """
@@ -86,28 +86,96 @@ def deactivate_prims_by_name(
     return deactivated
 
 
+def _set_prim_active(stage, prim_path: str, active: bool) -> bool:
+    """Set a prim active/inactive if it exists."""
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return False
+    prim.SetActive(active)
+    return True
+
+
 def set_lighting_mode(mode: int = 2) -> None:
-    """Set the viewport lighting rig mode.
+    """Set a repo-managed lighting rig in a headless-safe way.
+
+    Unlike the old viewport menubar action, this implementation authors stage
+    lights directly so camera output is consistent between GUI and headless
+    runs under Isaac Sim 5.1.
 
     Args:
-        mode: Lighting mode index.  Common values:
-            0 – Stage lights (default)
-            1 – Ambient
-            2 – Grey (uniform grey environment light)
+        mode: Lighting mode index. Common values:
+            0 – Stage lights (scene-authored/default stage lights only)
+            1 – Ambient dome light
+            2 – Grey neutral dome light
     """
     try:
-        import omni.kit.actions.core
+        from pathlib import Path
+        import sys
 
-        action_registry = omni.kit.actions.core.get_action_registry()
-        action = action_registry.get_action(
-            "omni.kit.viewport.menubar.lighting",
-            "set_lighting_mode_rig",
-        )
-        if action is not None:
-            action.execute(lighting_mode=mode)
-            print(f"[set_lighting_mode] Lighting mode set to {mode}.")
-        else:
-            print(f"[set_lighting_mode] Warning: lighting action not found in registry.")
+        import isaacsim
+        import omni.usd
+        from pxr import Sdf, Usd, UsdGeom, UsdLux
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            print("[set_lighting_mode] Warning: USD stage is not available.")
+            return
+
+        rig_prim_path = "/OmniKit_Viewport_LightRig"
+        extscache_root = Path(isaacsim.__file__).resolve().parent / "extscache"
+        lighting_ext_root = extscache_root / "omni.kit.viewport.menubar.lighting-107.3.1+107.3.0"
+        if str(lighting_ext_root) not in sys.path:
+            sys.path.append(str(lighting_ext_root))
+
+        from omni.kit.viewport.menubar.lighting.actions import _add_rig_reference
+        from omni.kit.viewport.menubar.lighting.utility import VisibilityEdit
+
+        def is_a_light(prim: Usd.Prim, prim_path):
+            return prim.HasAPI(UsdLux.LightAPI)
+
+        def _clear_usd_references(prim_path: str):
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim and prim.IsDefined():
+                prim.GetReferences().SetReferences([])
+            return prim
+
+        def _rig_asset_path(rig_name: str) -> str:
+            return str(lighting_ext_root / "data" / "usd" / f"{rig_name}.usda")
+
+        if mode == 0:
+            _clear_usd_references(rig_prim_path)
+            with Usd.EditContext(stage, stage.GetSessionLayer()):
+                VisibilityEdit(stage, is_a_light, None, api_types_for_prune=["LightAPI"]).run()
+            print("[set_lighting_mode] Lighting mode set to 0 (stage lights restored).")
+            return
+
+        rig_profiles = {
+            1: "Default",
+            2: "Grey_Studio",
+        }
+        rig_name = rig_profiles.get(mode)
+        if rig_name is None:
+            print(f"[set_lighting_mode] Warning: unsupported lighting mode {mode}, leaving stage unchanged.")
+            return
+
+        asset_path = _rig_asset_path(rig_name)
+        if not Path(asset_path).exists():
+            print(f"[set_lighting_mode] Warning: rig asset not found: {asset_path}")
+            return
+
+        _clear_usd_references(rig_prim_path)
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            VisibilityEdit(stage, None, is_a_light, api_types_for_prune=["LightAPI"]).run()
+            rig_prim = stage.OverridePrim(rig_prim_path)
+            xformable, adjustment = _add_rig_reference(rig_prim, asset_path)
+            omni.usd.editor.set_hide_in_stage_window(rig_prim, True)
+            omni.usd.editor.set_no_delete(rig_prim, True)
+            omni.usd.get_context().set_pickable(rig_prim_path, False)
+
+        if xformable and adjustment:
+            xformable.AddXformOp(UsdGeom.XformOp.TypeTransform).Set(adjustment)
+
+        print(f"[set_lighting_mode] Lighting mode set to {mode} using rig {rig_name} ({asset_path}).")
     except Exception as e:
         print(f"[set_lighting_mode] Warning: Could not set lighting mode: {e}")
 
