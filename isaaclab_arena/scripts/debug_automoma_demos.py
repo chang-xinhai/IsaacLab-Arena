@@ -229,7 +229,7 @@ def main():
             episode_index=args_cli.start_episode,
             set_state=args_cli.set_state,
             device=env.device,
-            only_successful=False,
+            only_successful=True,
             interpolation_factor=args_cli.interpolated,
         )
         
