@@ -173,6 +173,11 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     # Override num_envs
     config["num_envs"] = n_envs
 
+    # Normalize boolean launcher args so AppLauncher resolves render mode correctly.
+    for key in ("headless", "enable_cameras", "video", "disable_fabric", "enable_pinocchio"):
+        if key in config:
+            config[key] = bool(config[key])
+
     # Create argparse namespace for IsaacLab
     as_isaaclab_argparse = argparse.Namespace(**config)
 

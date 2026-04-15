@@ -24,11 +24,11 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         - Any <type>_<id> with a URDF/USD under automoma_assets/object/
 
     Usage:
-        python isaaclab_arena/scripts/replay_demos.py \\
-            --device cpu --enable_cameras \\
-            --dataset_file $DATASET_DIR/summit_franka_open_door.hdf5 \\
-            summit_franka_open_door \\
-            --object_name microwave_7221 \\
+        python isaaclab_arena/scripts/replay_demos.py \
+            --device cpu --enable_cameras \
+            --dataset_file $DATASET_DIR/summit_franka_open_door.hdf5 \
+            summit_franka_open_door \
+            --object_name microwave_7221 \
             --scene_name scene_0_seed_0
     """
 
@@ -144,7 +144,7 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         #     from isaaclab_arena.utils.pose import compose_poses as _compose
         #     raw_robot_pose = Pose(
         #         position_xyz=(
-        #             original_object_pose.position_xyz[0] - 2.5,  
+        #             original_object_pose.position_xyz[0] - 2.5,
         #             original_object_pose.position_xyz[1],
         #             0.0,
         #         ),
@@ -184,19 +184,27 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         # ---- Compose the scene ----
         scene = Scene(assets=assets)
 
-        # ---- Create the task ----
-        # task = OpenDoorTask(
-        #     target_object,
-        #     openness_threshold=0.8,
-        #     reset_openness=0.3,
-        #     episode_length_s=2.0,
-        # )
-        # TODO(walker): change task parameters
+        openness_threshold = getattr(args_cli, "openness_threshold", 0.3)
+        proximity_threshold = getattr(args_cli, "proximity_threshold", 0.12)
+        proximity_window_steps = getattr(args_cli, "proximity_window_steps", 8)
+        proximity_required_steps = getattr(args_cli, "proximity_required_steps", 5)
+        use_fingertips = not getattr(args_cli, "disable_fingertip_proximity", False)
+        debug_visualize_handle = getattr(args_cli, "debug_visualize_handle", False)
+        debug_record_handle_diagnostics = getattr(args_cli, "debug_record_handle_diagnostics", False)
+        debug_marker_scale = getattr(args_cli, "debug_marker_scale", 1.0)
+
         task = OpenDoorTask(
             target_object,
-            openness_threshold=0.3,
+            openness_threshold=openness_threshold,
             reset_openness=0.0,
             episode_length_s=3.0,
+            proximity_threshold=proximity_threshold,
+            proximity_window_steps=proximity_window_steps,
+            proximity_required_steps=proximity_required_steps,
+            use_fingertips=use_fingertips,
+            debug_visualize_handle=debug_visualize_handle,
+            debug_record_handle_diagnostics=debug_record_handle_diagnostics,
+            debug_marker_scale=debug_marker_scale,
         )
 
         # ---- Create the environment ----
@@ -238,3 +246,46 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         )
         parser.add_argument("--object", type=str, default=None, help="Optional additional object from asset registry")
         parser.add_argument("--teleop_device", type=str, default=None, help="Teleoperation device name")
+        parser.add_argument("--openness_threshold", type=float, default=0.3, help="Door openness threshold for success.")
+        parser.add_argument(
+            "--proximity_threshold",
+            type=float,
+            default=0.12,
+            help="Maximum robot-to-handle distance for engaged opening success.",
+        )
+        parser.add_argument(
+            "--proximity_window_steps",
+            type=int,
+            default=8,
+            help="Recent history window used for handle proximity success gating.",
+        )
+        parser.add_argument(
+            "--proximity_required_steps",
+            type=int,
+            default=5,
+            help="Required consecutive handle-proximity steps inside the recent window.",
+        )
+        parser.add_argument(
+            "--disable_fingertip_proximity",
+            action="store_true",
+            default=False,
+            help="Use only end-effector frame instead of fingertip frames for handle proximity.",
+        )
+        parser.add_argument(
+            "--debug_visualize_handle",
+            action="store_true",
+            default=False,
+            help="Render 3D debug markers for handle proximity geometry.",
+        )
+        parser.add_argument(
+            "--debug_record_handle_diagnostics",
+            action="store_true",
+            default=False,
+            help="Record per-step handle proximity geometry and gating diagnostics.",
+        )
+        parser.add_argument(
+            "--debug_marker_scale",
+            type=float,
+            default=1.0,
+            help="Scale multiplier for handle debug markers.",
+        )

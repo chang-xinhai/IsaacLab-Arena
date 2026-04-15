@@ -39,6 +39,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
     _cleanup_in_progress = False  # Class-level flag for re-entrant protection
+    _final_handle_distance_threshold = 0.1
 
     def __init__(
         self,
@@ -123,6 +124,8 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         if hasattr(env, "metadata") and env.metadata:
             self.metadata = {**self.metadata, **env.metadata}
 
+        self._episode_summaries = [self._make_empty_episode_summary() for _ in range(self._num_envs)]
+
         # Register cleanup handlers
         atexit.register(self._cleanup)
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -157,6 +160,85 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
     def device(self) -> str:
         return getattr(self._env, "device", "cpu")
 
+    @staticmethod
+    def _make_empty_episode_summary() -> dict[str, float | bool | None]:
+        return {
+            "max_openness": None,
+            "door_open_any": False,
+            "final_engaged": False,
+            "min_handle_distance": None,
+            "final_handle_distance": None,
+        }
+
+    @staticmethod
+    def _tensor_to_numpy(value: torch.Tensor | None) -> np.ndarray | None:
+        if value is None:
+            return None
+        return value.detach().cpu().numpy()
+
+    def _update_episode_summaries(self) -> None:
+        diagnostics = None
+        try:
+            from isaaclab_arena.metrics.handle_proximity_rate import get_cached_handle_proximity_diagnostics
+
+            task = getattr(getattr(self._env, "cfg", None), "isaaclab_arena_env", None)
+            openable_object = getattr(getattr(task, "task", None), "openable_object", None)
+            if openable_object is not None:
+                diagnostics = get_cached_handle_proximity_diagnostics(self._env, openable_object)
+        except Exception as exc:
+            logging.debug(f"[IsaacLabEnvWrapper] Failed to read handle diagnostics cache: {exc}")
+            diagnostics = None
+
+        if diagnostics is None:
+            return
+
+        openness = self._tensor_to_numpy(diagnostics.get("openness"))
+        door_open = self._tensor_to_numpy(diagnostics.get("door_open"))
+        handle_distance = self._tensor_to_numpy(diagnostics.get("handle_distance"))
+
+        for env_ix in range(self._num_envs):
+            summary = self._episode_summaries[env_ix]
+            if openness is not None:
+                openness_value = float(openness[env_ix])
+                summary["max_openness"] = openness_value if summary["max_openness"] is None else max(summary["max_openness"], openness_value)
+            if door_open is not None:
+                summary["door_open_any"] = bool(summary["door_open_any"] or bool(door_open[env_ix]))
+            if handle_distance is not None:
+                distance_value = float(handle_distance[env_ix])
+                summary["final_handle_distance"] = distance_value
+                summary["final_engaged"] = bool(distance_value <= self._final_handle_distance_threshold)
+                summary["min_handle_distance"] = (
+                    distance_value
+                    if summary["min_handle_distance"] is None
+                    else min(summary["min_handle_distance"], distance_value)
+                )
+
+    def _finalize_episode_summaries(
+        self,
+        terminated: np.ndarray,
+        truncated: np.ndarray,
+        is_success: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        done = terminated | truncated
+        final_info: dict[str, np.ndarray] = {"is_success": is_success}
+        for key in self._episode_summaries[0]:
+            if isinstance(self._episode_summaries[0][key], bool):
+                values = np.zeros(self._num_envs, dtype=bool)
+            else:
+                values = np.full(self._num_envs, np.nan, dtype=np.float32)
+            for env_ix in range(self._num_envs):
+                if done[env_ix]:
+                    value = self._episode_summaries[env_ix][key]
+                    if isinstance(self._episode_summaries[0][key], bool):
+                        values[env_ix] = bool(value)
+                    elif value is not None:
+                        values[env_ix] = float(value)
+            final_info[key] = values
+        for env_ix in range(self._num_envs):
+            if done[env_ix]:
+                self._episode_summaries[env_ix] = self._make_empty_episode_summary()
+        return final_info
+
     def reset(
         self,
         *,
@@ -182,6 +264,8 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         # Set initial state from trajectory data (for evaluation with varying start poses)
         if self._traj_data is not None:
             obs = self._set_initial_state_from_traj(obs)
+
+        self._episode_summaries = [self._make_empty_episode_summary() for _ in range(self._num_envs)]
 
         if "final_info" not in info:
             zeros = np.zeros(self._num_envs, dtype=bool)
@@ -288,6 +372,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
             actions = self._integrate_base_deltas(actions)
 
         obs, reward, terminated, truncated, info = self._env.step(actions)
+        self._update_episode_summaries()
 
         # Convert to numpy for gym compatibility
         reward = reward.cpu().numpy().astype(np.float32)
@@ -295,27 +380,19 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         truncated = truncated.cpu().numpy().astype(bool)
 
         is_success = self._get_success(terminated, truncated)
-        info["final_info"] = {"is_success": is_success}
+        info["final_info"] = self._finalize_episode_summaries(terminated, truncated, is_success)
 
         return obs, reward, terminated, truncated, info
 
     def _get_success(self, terminated: np.ndarray, truncated: np.ndarray) -> np.ndarray:
+        done = terminated | truncated
         is_success = np.zeros(self._num_envs, dtype=bool)
-
-        if not hasattr(self._env, "termination_manager"):
-            return is_success & (terminated | truncated)
-
-        term_manager = self._env.termination_manager
-        if not hasattr(term_manager, "get_term"):
-            return is_success & (terminated | truncated)
-
-        success_tensor = term_manager.get_term("success")
-        if success_tensor is None:
-            return is_success & (terminated | truncated)
-
-        is_success = success_tensor.cpu().numpy().astype(bool)
-
-        return is_success & (terminated | truncated)
+        for env_ix in range(self._num_envs):
+            if not done[env_ix]:
+                continue
+            summary = self._episode_summaries[env_ix]
+            is_success[env_ix] = bool(summary["door_open_any"] and summary["final_engaged"])
+        return is_success
 
     def _integrate_base_deltas(self, actions: torch.Tensor) -> torch.Tensor:
         """Convert relative base deltas to absolute positions.
@@ -371,7 +448,11 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         if self.render_mode != "rgb_array":
             return None
 
-        frames = self._env.render() if hasattr(self._env, "render") else None
+        try:
+            frames = self._env.render() if hasattr(self._env, "render") else None
+        except RuntimeError as exc:
+            logging.warning(f"[IsaacLabEnvWrapper] Render unavailable, returning placeholder frame: {exc}")
+            return None
         if frames is None:
             return None
 

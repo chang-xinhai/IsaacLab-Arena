@@ -12,7 +12,9 @@ from the automoma_assets collection. Objects are looked up by name in the form
 """
 
 import json
+import math
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from isaaclab_arena.affordances.openable import Openable
@@ -26,6 +28,99 @@ from isaaclab_arena.utils.pose import Pose
 _DEFAULT_ASSETS_ROOT = Path(__file__).resolve().parents[2] / "res_for_custom" / "automoma_assets"
 _AUTOMOMA_OBJECT_ROOT = Path(os.environ.get("AUTOMOMA_OBJECT_ROOT", str(_DEFAULT_ASSETS_ROOT / "object")))
 _AUTOMOMA_SCENE_ROOT = Path(os.environ.get("AUTOMOMA_SCENE_ROOT", str(_DEFAULT_ASSETS_ROOT / "scene")))
+_HANDLE_NAME_TOKENS = ("handle", "knob")
+
+
+def _resolve_mesh_path(urdf_dir: Path, mesh_path: str) -> Path:
+    mesh = Path(mesh_path)
+    if mesh.is_absolute():
+        return mesh
+    if mesh.parts[:2] == ("assets", "object"):
+        return _AUTOMOMA_OBJECT_ROOT.parent.parent / mesh
+    return urdf_dir / mesh
+
+
+def _compute_mesh_center(mesh_path: Path) -> tuple[float, float, float] | None:
+    min_corner = [float("inf"), float("inf"), float("inf")]
+    max_corner = [float("-inf"), float("-inf"), float("-inf")]
+    has_vertex = False
+    with open(mesh_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if not line.startswith("v "):
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            vertex = [float(parts[1]), float(parts[2]), float(parts[3])]
+            for i, value in enumerate(vertex):
+                min_corner[i] = min(min_corner[i], value)
+                max_corner[i] = max(max_corner[i], value)
+            has_vertex = True
+    if not has_vertex:
+        return None
+    return tuple((low + high) / 2.0 for low, high in zip(min_corner, max_corner, strict=True))
+
+
+def _parse_xyz(element: ET.Element | None) -> tuple[float, float, float]:
+    if element is None:
+        return (0.0, 0.0, 0.0)
+    return tuple(float(v) for v in element.attrib.get("xyz", "0 0 0").split())
+
+
+def _parse_rpy(element: ET.Element | None) -> tuple[float, float, float]:
+    if element is None:
+        return (0.0, 0.0, 0.0)
+    return tuple(float(v) for v in element.attrib.get("rpy", "0 0 0").split())
+
+
+def _rotate_xyz(rpy: tuple[float, float, float], xyz: tuple[float, float, float]) -> tuple[float, float, float]:
+    roll, pitch, yaw = rpy
+    x, y, z = xyz
+    cx, sx = math.cos(roll), math.sin(roll)
+    cy, sy = math.cos(pitch), math.sin(pitch)
+    cz, sz = math.cos(yaw), math.sin(yaw)
+    rotated_x = cz * cy * x + (cz * sy * sx - sz * cx) * y + (cz * sy * cx + sz * sx) * z
+    rotated_y = sz * cy * x + (sz * sy * sx + cz * cx) * y + (sz * sy * cx - cz * sx) * z
+    rotated_z = -sy * x + cy * sx * y + cy * cx * z
+    return (rotated_x, rotated_y, rotated_z)
+
+
+def _extract_handle_reference(urdf_path: Path) -> tuple[str | None, tuple[float, float, float] | None]:
+    root = ET.parse(urdf_path).getroot()
+    urdf_dir = urdf_path.parent
+    candidate_visuals: list[tuple[str, tuple[float, float, float]]] = []
+    for link in root.findall("link"):
+        link_name = link.attrib.get("name")
+        if link_name is None:
+            continue
+        for visual in link.findall("visual"):
+            visual_name = visual.attrib.get("name", "").lower()
+            if not any(token in visual_name for token in _HANDLE_NAME_TOKENS):
+                continue
+            mesh = visual.find("./geometry/mesh")
+            if mesh is None or "filename" not in mesh.attrib:
+                continue
+            mesh_path = _resolve_mesh_path(urdf_dir, mesh.attrib["filename"])
+            if not mesh_path.exists():
+                continue
+            mesh_center = _compute_mesh_center(mesh_path)
+            if mesh_center is None:
+                continue
+            visual_origin = visual.find("origin")
+            visual_center = _rotate_xyz(_parse_rpy(visual_origin), mesh_center)
+            visual_offset = _parse_xyz(visual_origin)
+            candidate_visuals.append(
+                (
+                    link_name,
+                    tuple(visual_offset[i] + visual_center[i] for i in range(3)),
+                )
+            )
+    if not candidate_visuals:
+        return None, None
+    link_name = candidate_visuals[0][0]
+    centers = [center for current_link, center in candidate_visuals if current_link == link_name]
+    averaged_center = tuple(sum(center[i] for center in centers) / len(centers) for i in range(3))
+    return link_name, averaged_center
 
 
 class AutomomaOpenableObject(Object, Openable):
@@ -73,6 +168,8 @@ class AutomomaOpenableObject(Object, Openable):
             openable_joint_name = self.openable_joint_name
         if openable_open_threshold is None:
             openable_open_threshold = self.openable_open_threshold
+        urdf_path = new_usd_path.parent.parent / "mobility.urdf" if new_usd_path.exists() else legacy_usd_path.parent.parent / "mobility.urdf"
+        handle_link_name, handle_local_position = _extract_handle_reference(urdf_path)
         super().__init__(
             name=name,
             prim_path=prim_path,
@@ -83,6 +180,8 @@ class AutomomaOpenableObject(Object, Openable):
             initial_pose=initial_pose,
             openable_joint_name=openable_joint_name,
             openable_open_threshold=openable_open_threshold,
+            handle_link_name=handle_link_name,
+            handle_local_position=handle_local_position,
             **kwargs,
         )
 

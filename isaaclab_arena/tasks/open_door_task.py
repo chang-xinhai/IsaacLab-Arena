@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import numpy as np
 from dataclasses import MISSING
 
@@ -10,15 +11,22 @@ import isaaclab.envs.mdp as mdp_isaac_lab
 from isaaclab.envs.common import ViewerCfg
 from isaaclab.envs.mimic_env_cfg import MimicEnvCfg, SubTaskConfig
 from isaaclab.managers import EventTermCfg, SceneEntityCfg, TerminationTermCfg
+from isaaclab.managers.recorder_manager import RecorderManagerBaseCfg
 from isaaclab.utils import configclass
 
 from isaaclab_arena.affordances.openable import Openable
 from isaaclab_arena.metrics.door_moved_rate import DoorMovedRateMetric
+from isaaclab_arena.metrics.handle_proximity_rate import (
+    HandleDiagnosticsRecorderCfg,
+    HandleProximityRateMetric,
+    compute_open_while_engaged,
+)
 from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.success_rate import SuccessRateMetric
 from isaaclab_arena.tasks.task_base import TaskBase
 from isaaclab_arena.terms.events import set_object_pose
 from isaaclab_arena.utils.cameras import get_viewer_cfg_look_at_object
+from isaaclab_arena.utils.configclass import make_configclass
 
 
 class OpenDoorTask(TaskBase):
@@ -28,15 +36,45 @@ class OpenDoorTask(TaskBase):
         openness_threshold: float | None = None,
         reset_openness: float | None = None,
         episode_length_s: float | None = None,
+        proximity_threshold: float = 0.12,
+        proximity_window_steps: int = 8,
+        proximity_required_steps: int = 5,
+        use_fingertips: bool = True,
+        debug_visualize_handle: bool = False,
+        debug_record_handle_diagnostics: bool = False,
+        debug_marker_scale: float = 1.0,
     ):
         super().__init__(episode_length_s=episode_length_s)
         assert isinstance(openable_object, Openable), "Openable object must be an instance of Openable"
         self.openable_object = openable_object
         self.openness_threshold = openness_threshold
         self.reset_openness = reset_openness
+        self.proximity_threshold = proximity_threshold
+        self.proximity_window_steps = proximity_window_steps
+        self.proximity_required_steps = proximity_required_steps
+        self.use_fingertips = use_fingertips
+        self.debug_visualize_handle = debug_visualize_handle
+        self.debug_record_handle_diagnostics = debug_record_handle_diagnostics
+        self.debug_marker_scale = debug_marker_scale
         self.scene_config = None
         self.events_cfg = OpenDoorEventCfg(self.openable_object, reset_openness=self.reset_openness)
         self.termination_cfg = self.make_termination_cfg()
+
+        logging.info(
+            "[OpenDoorTask] handle_link=%s handle_local_position=%s openness_threshold=%s proximity_threshold=%s "
+            "proximity_window_steps=%s proximity_required_steps=%s use_fingertips=%s debug_visualize_handle=%s "
+            "debug_record_handle_diagnostics=%s debug_marker_scale=%s",
+            self.openable_object.handle_link_name,
+            self.openable_object.handle_local_position,
+            self.openness_threshold,
+            self.proximity_threshold,
+            self.proximity_window_steps,
+            self.proximity_required_steps,
+            self.use_fingertips,
+            self.debug_visualize_handle,
+            self.debug_record_handle_diagnostics,
+            self.debug_marker_scale,
+        )
 
     def get_scene_cfg(self):
         return self.scene_config
@@ -45,11 +83,19 @@ class OpenDoorTask(TaskBase):
         return self.termination_cfg
 
     def make_termination_cfg(self):
-        params = {}
+        params = {
+            "openable_object": self.openable_object,
+            "proximity_threshold": self.proximity_threshold,
+            "proximity_window_steps": self.proximity_window_steps,
+            "proximity_required_steps": self.proximity_required_steps,
+            "use_fingertips": self.use_fingertips,
+            "debug_visualize_handle": self.debug_visualize_handle,
+            "debug_marker_scale": self.debug_marker_scale,
+        }
         if self.openness_threshold is not None:
-            params["threshold"] = self.openness_threshold
+            params["openness_threshold"] = self.openness_threshold
         success = TerminationTermCfg(
-            func=self.openable_object.is_open,
+            func=compute_open_while_engaged,
             params=params,
         )
         return TerminationsCfg(success=success)
@@ -73,7 +119,28 @@ class OpenDoorTask(TaskBase):
                 self.openable_object,
                 reset_openness=self.reset_openness,
             ),
+            HandleProximityRateMetric(
+                self.openable_object,
+                proximity_threshold=self.proximity_threshold,
+                use_fingertips=self.use_fingertips,
+            ),
         ]
+
+    def get_recorder_term_cfg(self) -> RecorderManagerBaseCfg | None:
+        if not self.debug_record_handle_diagnostics:
+            return None
+
+        recorder_cfg = HandleDiagnosticsRecorderCfg(
+            openable_object=self.openable_object,
+            use_fingertips=self.use_fingertips,
+            proximity_threshold=self.proximity_threshold,
+        )
+        recorder_manager_cfg_cls = make_configclass(
+            "OpenDoorRecorderManagerCfg",
+            [("handle_diagnostics", HandleDiagnosticsRecorderCfg, recorder_cfg)],
+            bases=(RecorderManagerBaseCfg,),
+        )
+        return recorder_manager_cfg_cls()
 
     def get_viewer_cfg(self) -> ViewerCfg:
         return get_viewer_cfg_look_at_object(lookat_object=self.openable_object, offset=np.array([-1.3, -1.3, 1.3]))
