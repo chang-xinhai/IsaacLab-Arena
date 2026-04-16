@@ -145,6 +145,8 @@ def _convert_11d_to_12d(data: dict) -> dict:
 
 
 def main():
+    collisionless_replay = args_cli.set_state
+
     # ---- Build environment ----
     arena_builder = get_arena_builder_from_cli(args_cli)
     env_name, env_cfg = arena_builder.build_registered()
@@ -166,7 +168,9 @@ def main():
     if object_name:
         deactivate_prims_by_name(object_name, exclude_paths=(), required_path_substrings=("/scene/",))
     set_lighting_mode(2)
-    
+    if collisionless_replay:
+        disable_all_collisions()
+
     # Load data
     print(f"Loading debug file: {args_cli.debug_file}")
     data = torch.load(args_cli.debug_file, map_location="cpu", weights_only=False)
@@ -185,6 +189,8 @@ def main():
         raise ValueError(f"Unknown data format in {args_cli.debug_file}. Keys: {data.keys()}")
 
     obs, _ = env.reset()
+    if collisionless_replay:
+        disable_all_collisions()
     obs = sync_cameras_after_reset(env)
 
     if mode == "IK":
@@ -251,6 +257,8 @@ def main():
             
             if ep_idx < num_episodes - 1:
                 env.reset()
+                if collisionless_replay:
+                    disable_all_collisions()
 
         if mode == "TRAJ" and 'traj_path' in locals():
             os.remove(traj_path)

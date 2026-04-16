@@ -278,6 +278,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
             # Directly set joint states — bypass physics
             self._set_robot_joint_state(env, robot_target)
             self._set_object_joint_state(env, obj_target)
+            self._sync_written_state(env)
 
         # Build the action tensor (absolute joint positions)
         action = robot_target.unsqueeze(0).to(dev)
@@ -315,6 +316,14 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
                 entity.write_joint_state_to_sim(joint_pos, joint_vel)
                 break
 
+    def _sync_written_state(self, env: gym.Env) -> None:
+        """Flush recently written articulation state to sim-side buffers."""
+        unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+        unwrapped.scene.write_data_to_sim()
+        if hasattr(unwrapped.sim, "render"):
+            unwrapped.sim.render()
+        unwrapped.scene.update(unwrapped.physics_dt)
+
     def set_initial_state(self, env: gym.Env) -> None:
         """Set the robot and object to the trajectory's starting state.
 
@@ -323,13 +332,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         """
         self._set_robot_joint_state(env, self.get_start_robot_joints())
         self._set_object_joint_state(env, self.get_start_obj_joints())
-
-        unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
-        # Flush the state to the sim and let it settle
-        unwrapped.scene.write_data_to_sim()
-        if hasattr(unwrapped.sim, "render"):
-            unwrapped.sim.render()
-        unwrapped.scene.update(unwrapped.physics_dt)
+        self._sync_written_state(env)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset the step counter for the current episode."""

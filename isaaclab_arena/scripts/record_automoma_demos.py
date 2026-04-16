@@ -240,6 +240,8 @@ def _postprocess_mobile_base_relative(dataset_file: str, base_dof: int = 3) -> N
 
 
 def main():
+    collisionless_replay = args_cli.set_state or args_cli.disable_collision
+
     # ---- Setup output ----
     output_dir = os.path.dirname(args_cli.dataset_file)
     output_file_name = os.path.splitext(os.path.basename(args_cli.dataset_file))[0]
@@ -297,7 +299,7 @@ def main():
     set_lighting_mode(2)
 
     # 3) Optionally disable ALL collisions in the simulation
-    if args_cli.disable_collision:
+    if collisionless_replay:
         disable_all_collisions()
 
     # ---- Create replay policy ----
@@ -314,6 +316,7 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Recording {num_episodes} episodes to {args_cli.dataset_file}")
     print(f"Mode: {'set_state (teleport)' if args_cli.set_state else 'drive (physics)'}")
+    print(f"Collision mode: {'disabled' if collisionless_replay else 'enabled'}")
     print(f"Steps per episode: {policy.n_steps} (raw={policy.n_raw_steps}, interp={args_cli.interpolated}x)")
     print(f"Mobile base relative: {args_cli.mobile_base_relative}")
     print(f"{'=' * 60}\n")
@@ -322,7 +325,7 @@ def main():
 
     # ---- Initial reset ----
     obs, _ = env.reset()
-    if args_cli.disable_collision:
+    if collisionless_replay:
         disable_all_collisions()
     # Fix first-frame camera lag: force a render + recompute observations
     obs = sync_cameras_after_reset(env)
@@ -353,6 +356,8 @@ def main():
         # Reset for next episode (this exports the current one)
         if ep_idx < num_episodes - 1:
             obs, _ = env.reset()
+            if collisionless_replay:
+                disable_all_collisions()
             obs = sync_cameras_after_reset(env)
         else:
             # Export the last episode
