@@ -216,7 +216,7 @@ class SummitFrankaCameraCfg:
         width=320,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=50.0,
+            focal_length=15.0,
             clipping_range=(0.01, 1.0e5),
         ),
         offset=CameraCfg.OffsetCfg(
