@@ -178,7 +178,7 @@ class SummitFrankaCameraCfg:
         update_period=0.0,
         height=240,
         width=320,
-        data_types=["rgb"],
+        data_types=["rgb", "depth"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=50.0,
             clipping_range=(0.01, 1.0e5),
@@ -196,7 +196,7 @@ class SummitFrankaCameraCfg:
         update_period=0.0,
         height=240,
         width=320,
-        data_types=["rgb"],
+        data_types=["rgb", "depth"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=15,
             clipping_range=(0.01, 1.0e5),
@@ -214,7 +214,7 @@ class SummitFrankaCameraCfg:
         update_period=0.0,
         height=240,
         width=320,
-        data_types=["rgb"],
+        data_types=["rgb", "depth"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=15.0,
             clipping_range=(0.01, 1.0e5),
