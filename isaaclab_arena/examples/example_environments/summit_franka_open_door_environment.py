@@ -188,6 +188,9 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         proximity_threshold = getattr(args_cli, "proximity_threshold", 0.12)
         proximity_window_steps = getattr(args_cli, "proximity_window_steps", 8)
         proximity_required_steps = getattr(args_cli, "proximity_required_steps", 5)
+        stability_window_steps = getattr(args_cli, "stability_window_steps", 8)
+        openness_stability_epsilon = getattr(args_cli, "openness_stability_epsilon", 1e-3)
+        joint_stability_epsilon = getattr(args_cli, "joint_stability_epsilon", 1e-3)
         use_fingertips = not getattr(args_cli, "disable_fingertip_proximity", False)
         debug_visualize_handle = getattr(args_cli, "debug_visualize_handle", False)
         debug_record_handle_diagnostics = getattr(args_cli, "debug_record_handle_diagnostics", False)
@@ -201,6 +204,9 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
             proximity_threshold=proximity_threshold,
             proximity_window_steps=proximity_window_steps,
             proximity_required_steps=proximity_required_steps,
+            stability_window_steps=stability_window_steps,
+            openness_stability_epsilon=openness_stability_epsilon,
+            joint_stability_epsilon=joint_stability_epsilon,
             use_fingertips=use_fingertips,
             debug_visualize_handle=debug_visualize_handle,
             debug_record_handle_diagnostics=debug_record_handle_diagnostics,
@@ -264,6 +270,24 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
             type=int,
             default=5,
             help="Required consecutive handle-proximity steps inside the recent window.",
+        )
+        parser.add_argument(
+            "--stability_window_steps",
+            type=int,
+            default=8,
+            help="Early terminate only after openness and robot joints remain stable for this many consecutive steps.",
+        )
+        parser.add_argument(
+            "--openness_stability_epsilon",
+            type=float,
+            default=1e-3,
+            help="Maximum per-step openness change treated as stable.",
+        )
+        parser.add_argument(
+            "--joint_stability_epsilon",
+            type=float,
+            default=1e-3,
+            help="Maximum per-step absolute robot joint change treated as stable.",
         )
         parser.add_argument(
             "--disable_fingertip_proximity",

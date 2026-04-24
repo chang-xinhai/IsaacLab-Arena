@@ -273,6 +273,7 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     # Check for trajectory-based initial state (for evaluation)
     traj_file = config.get("traj_file", None)
     traj_seed = config.get("traj_seed", 42)
+    handle_distance_threshold = config.get("handle_distance_threshold", 0.1)
 
     # Wrap and return
     wrapped_env = IsaacLabEnvWrapper(
@@ -286,6 +287,7 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         state_key=state_key,
         traj_file=traj_file,
         traj_seed=traj_seed,
+        handle_distance_threshold=handle_distance_threshold,
     )
     logging.info(f"Created: {environment} with {wrapped_env.num_envs} envs, render_mode={render_mode}")
 

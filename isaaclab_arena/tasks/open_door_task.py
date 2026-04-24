@@ -19,7 +19,7 @@ from isaaclab_arena.metrics.door_moved_rate import DoorMovedRateMetric
 from isaaclab_arena.metrics.handle_proximity_rate import (
     HandleDiagnosticsRecorderCfg,
     HandleProximityRateMetric,
-    compute_open_while_engaged,
+    compute_stable_open_and_joints,
 )
 from isaaclab_arena.metrics.metric_base import MetricBase
 from isaaclab_arena.metrics.success_rate import SuccessRateMetric
@@ -39,6 +39,9 @@ class OpenDoorTask(TaskBase):
         proximity_threshold: float = 0.12,
         proximity_window_steps: int = 8,
         proximity_required_steps: int = 5,
+        stability_window_steps: int = 8,
+        openness_stability_epsilon: float = 1e-3,
+        joint_stability_epsilon: float = 1e-3,
         use_fingertips: bool = True,
         debug_visualize_handle: bool = False,
         debug_record_handle_diagnostics: bool = False,
@@ -52,6 +55,9 @@ class OpenDoorTask(TaskBase):
         self.proximity_threshold = proximity_threshold
         self.proximity_window_steps = proximity_window_steps
         self.proximity_required_steps = proximity_required_steps
+        self.stability_window_steps = stability_window_steps
+        self.openness_stability_epsilon = openness_stability_epsilon
+        self.joint_stability_epsilon = joint_stability_epsilon
         self.use_fingertips = use_fingertips
         self.debug_visualize_handle = debug_visualize_handle
         self.debug_record_handle_diagnostics = debug_record_handle_diagnostics
@@ -62,7 +68,8 @@ class OpenDoorTask(TaskBase):
 
         logging.info(
             "[OpenDoorTask] handle_link=%s handle_local_position=%s openness_threshold=%s proximity_threshold=%s "
-            "proximity_window_steps=%s proximity_required_steps=%s use_fingertips=%s debug_visualize_handle=%s "
+            "proximity_window_steps=%s proximity_required_steps=%s stability_window_steps=%s "
+            "openness_stability_epsilon=%s joint_stability_epsilon=%s use_fingertips=%s debug_visualize_handle=%s "
             "debug_record_handle_diagnostics=%s debug_marker_scale=%s",
             self.openable_object.handle_link_name,
             self.openable_object.handle_local_position,
@@ -70,6 +77,9 @@ class OpenDoorTask(TaskBase):
             self.proximity_threshold,
             self.proximity_window_steps,
             self.proximity_required_steps,
+            self.stability_window_steps,
+            self.openness_stability_epsilon,
+            self.joint_stability_epsilon,
             self.use_fingertips,
             self.debug_visualize_handle,
             self.debug_record_handle_diagnostics,
@@ -85,17 +95,17 @@ class OpenDoorTask(TaskBase):
     def make_termination_cfg(self):
         params = {
             "openable_object": self.openable_object,
-            "proximity_threshold": self.proximity_threshold,
-            "proximity_window_steps": self.proximity_window_steps,
-            "proximity_required_steps": self.proximity_required_steps,
+            "stability_window_steps": self.stability_window_steps,
+            "openness_stability_epsilon": self.openness_stability_epsilon,
+            "joint_stability_epsilon": self.joint_stability_epsilon,
             "use_fingertips": self.use_fingertips,
+            "proximity_threshold": self.proximity_threshold,
+            "openness_threshold": self.openness_threshold,
             "debug_visualize_handle": self.debug_visualize_handle,
             "debug_marker_scale": self.debug_marker_scale,
         }
-        if self.openness_threshold is not None:
-            params["openness_threshold"] = self.openness_threshold
         success = TerminationTermCfg(
-            func=compute_open_while_engaged,
+            func=compute_stable_open_and_joints,
             params=params,
         )
         return TerminationsCfg(success=success)
@@ -153,7 +163,8 @@ class TerminationsCfg:
     time_out: TerminationTermCfg = TerminationTermCfg(func=mdp_isaac_lab.time_out)
 
     # Dependent on the openable object, so this is passed in from the task at
-    # construction time.
+    # construction time. We keep the field name `success` because IsaacLab
+    # recorder and mimic utilities expect this termination term to exist.
     success: TerminationTermCfg = MISSING
 
 

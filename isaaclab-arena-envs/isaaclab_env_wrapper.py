@@ -39,7 +39,6 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
     _cleanup_in_progress = False  # Class-level flag for re-entrant protection
-    _final_handle_distance_threshold = 0.1
 
     def __init__(
         self,
@@ -53,6 +52,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         state_key: str = "joint_pos",
         traj_file: str | None = None,
         traj_seed: int = 42,
+        handle_distance_threshold: float = 0.1,
     ):
         self._env = env
         self._num_envs = env.num_envs
@@ -65,6 +65,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         self._mobile_base_relative = mobile_base_relative
         self._base_dof = base_dof
         self._state_key = state_key
+        self._handle_distance_threshold = handle_distance_threshold
 
         # Trajectory-based initial state for evaluation
         self._traj_data = None
@@ -163,10 +164,10 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
     @staticmethod
     def _make_empty_episode_summary() -> dict[str, float | bool | None]:
         return {
-            "max_openness": None,
-            "door_open_any": False,
+            "final_openness": None,
+            "final_door_openness": None,
+            "final_door_open": False,
             "final_engaged": False,
-            "min_handle_distance": None,
             "final_handle_distance": None,
         }
 
@@ -200,18 +201,14 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
             summary = self._episode_summaries[env_ix]
             if openness is not None:
                 openness_value = float(openness[env_ix])
-                summary["max_openness"] = openness_value if summary["max_openness"] is None else max(summary["max_openness"], openness_value)
+                summary["final_openness"] = openness_value
+                summary["final_door_openness"] = openness_value
             if door_open is not None:
-                summary["door_open_any"] = bool(summary["door_open_any"] or bool(door_open[env_ix]))
+                summary["final_door_open"] = bool(door_open[env_ix])
             if handle_distance is not None:
                 distance_value = float(handle_distance[env_ix])
                 summary["final_handle_distance"] = distance_value
-                summary["final_engaged"] = bool(distance_value <= self._final_handle_distance_threshold)
-                summary["min_handle_distance"] = (
-                    distance_value
-                    if summary["min_handle_distance"] is None
-                    else min(summary["min_handle_distance"], distance_value)
-                )
+                summary["final_engaged"] = bool(distance_value <= self._handle_distance_threshold)
 
     def _finalize_episode_summaries(
         self,
@@ -391,7 +388,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
             if not done[env_ix]:
                 continue
             summary = self._episode_summaries[env_ix]
-            is_success[env_ix] = bool(summary["door_open_any"] and summary["final_engaged"])
+            is_success[env_ix] = bool(summary["final_door_open"] and summary["final_engaged"])
         return is_success
 
     def _integrate_base_deltas(self, actions: torch.Tensor) -> torch.Tensor:

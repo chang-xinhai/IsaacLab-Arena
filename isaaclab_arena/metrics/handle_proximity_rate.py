@@ -24,6 +24,9 @@ _HANDLE_DEBUG_CACHE_PREFIX = "_handle_proximity_debug_cache_"
 _HANDLE_NEAR_HISTORY_PREFIX = "_open_door_near_history_"
 _HANDLE_DEBUG_MARKERS_PREFIX = "_handle_proximity_debug_markers_"
 _HANDLE_DEBUG_MARKERS_WARNED_PREFIX = "_handle_proximity_debug_markers_warned_"
+_STABILITY_PREV_OPENNESS_PREFIX = "_open_door_prev_openness_"
+_STABILITY_PREV_JOINT_POS_PREFIX = "_open_door_prev_joint_pos_"
+_STABILITY_COUNTER_PREFIX = "_open_door_stability_counter_"
 
 
 class HandleDistanceRecorder(RecorderTerm):
@@ -139,6 +142,18 @@ def _get_markers_attr(openable_object: Openable) -> str:
 
 def _get_markers_warned_attr(openable_object: Openable) -> str:
     return f"{_HANDLE_DEBUG_MARKERS_WARNED_PREFIX}{openable_object.name}"
+
+
+def _get_prev_openness_attr(openable_object: Openable) -> str:
+    return f"{_STABILITY_PREV_OPENNESS_PREFIX}{openable_object.name}"
+
+
+def _get_prev_joint_pos_attr(openable_object: Openable) -> str:
+    return f"{_STABILITY_PREV_JOINT_POS_PREFIX}{openable_object.name}"
+
+
+def _get_stability_counter_attr(openable_object: Openable) -> str:
+    return f"{_STABILITY_COUNTER_PREFIX}{openable_object.name}"
 
 
 def get_cached_handle_proximity_diagnostics(env: ManagerBasedRLEnv, openable_object: Openable) -> dict[str, torch.Tensor] | None:
@@ -439,3 +454,72 @@ def compute_open_while_engaged(
         )
 
     return door_open & final_engaged
+
+
+def compute_stable_open_and_joints(
+    env: ManagerBasedRLEnv,
+    openable_object: Openable,
+    stability_window_steps: int,
+    openness_stability_epsilon: float,
+    joint_stability_epsilon: float,
+    use_fingertips: bool,
+    proximity_threshold: float,
+    openness_threshold: float | None = None,
+    debug_visualize_handle: bool = False,
+    debug_marker_scale: float = 1.0,
+) -> torch.Tensor:
+    openness = openable_object.get_openness(env)
+    robot_joint_pos = env.scene["robot"].data.joint_pos
+    step_count = torch.clamp(env.episode_length_buf, min=1)
+    new_episode_mask = step_count <= 1
+
+    prev_openness_attr = _get_prev_openness_attr(openable_object)
+    prev_joint_pos_attr = _get_prev_joint_pos_attr(openable_object)
+    counter_attr = _get_stability_counter_attr(openable_object)
+
+    prev_openness = getattr(env, prev_openness_attr, None)
+    if prev_openness is None or prev_openness.shape != openness.shape:
+        prev_openness = openness.clone()
+        setattr(env, prev_openness_attr, prev_openness)
+
+    prev_joint_pos = getattr(env, prev_joint_pos_attr, None)
+    if prev_joint_pos is None or prev_joint_pos.shape != robot_joint_pos.shape:
+        prev_joint_pos = robot_joint_pos.clone()
+        setattr(env, prev_joint_pos_attr, prev_joint_pos)
+
+    stable_counter = getattr(env, counter_attr, None)
+    if stable_counter is None or stable_counter.shape != step_count.shape:
+        stable_counter = torch.zeros_like(step_count)
+        setattr(env, counter_attr, stable_counter)
+
+    if torch.any(new_episode_mask):
+        prev_openness[new_episode_mask] = openness[new_episode_mask]
+        prev_joint_pos[new_episode_mask] = robot_joint_pos[new_episode_mask]
+        stable_counter[new_episode_mask] = 0
+
+    openness_stable = torch.abs(openness - prev_openness) <= openness_stability_epsilon
+    joint_stable = torch.max(torch.abs(robot_joint_pos - prev_joint_pos), dim=1).values <= joint_stability_epsilon
+    stable_now = openness_stable & joint_stable
+    stable_counter[:] = torch.where(stable_now, stable_counter + 1, torch.zeros_like(stable_counter))
+    stable_counter[new_episode_mask] = 0
+
+    prev_openness[:] = openness
+    prev_joint_pos[:] = robot_joint_pos
+
+    if openable_object.has_handle_reference():
+        diagnostics = compute_handle_proximity_geometry(env, openable_object, use_fingertips=use_fingertips)
+        diagnostics["proximity_near"] = diagnostics["handle_distance"] <= proximity_threshold
+        diagnostics["engaged"] = diagnostics["handle_distance"] <= 0.1
+        diagnostics["door_open"] = openable_object.is_open(env, threshold=openness_threshold)
+        diagnostics["openness"] = openness
+        _set_cached_handle_proximity_diagnostics(env, openable_object, diagnostics)
+
+        if debug_visualize_handle:
+            _maybe_visualize_handle_debug(
+                env=env,
+                openable_object=openable_object,
+                diagnostics=diagnostics,
+                marker_scale=debug_marker_scale,
+            )
+
+    return stable_counter >= stability_window_steps
