@@ -111,26 +111,44 @@ class SummitFrankaSceneCfg:
             },
             joint_vel={".*": 0.0},
         ),
-        # TODO(walker): adjust stiffness and damping
+        # Tuned for AutoMoMa joint-space replay/eval trajectories.
         actuators={
             "base": ImplicitActuatorCfg(
                 joint_names_expr=["base_x", "base_y", "base_z"],
-                effort_limit_sim=5e3,
-                velocity_limit_sim=1.5,
-                stiffness=8e3,
+                # AutoMoMa replay sends dense absolute joint targets. These
+                # virtual base drives need enough authority to follow the
+                # planner trajectory without falling several frames behind.
+                effort_limit_sim=1e5,
+                velocity_limit_sim={
+                    "base_x": 2.6,
+                    "base_y": 2.8,
+                    "base_z": 12.7,
+                },
+                stiffness=4e5,
                 damping=2e3,
             ),
             "arm": ImplicitActuatorCfg(
                 joint_names_expr=["panda_joint.*"],
-                effort_limit_sim=5e3,
-                velocity_limit_sim=2.175,
-                stiffness=1e4,
+                effort_limit_sim=1e5,
+                velocity_limit_sim={
+                    "panda_joint1": 11.9,
+                    "panda_joint2": 7.1,
+                    "panda_joint3": 9.7,
+                    "panda_joint4": 7.4,
+                    "panda_joint5": 11.8,
+                    "panda_joint6": 12.1,
+                    "panda_joint7": 11.1,
+                },
+                stiffness=5e5,
                 damping=1e2,
             ),
             "gripper": ImplicitActuatorCfg(
                 joint_names_expr=["panda_finger_joint.*"],
                 effort_limit_sim=5e3,
-                velocity_limit_sim=0.2,
+                velocity_limit_sim={
+                    "panda_finger_joint1": 0.8,
+                    "panda_finger_joint2": 0.8,
+                },
                 stiffness=1e6,  # gripper needs higher stiffness to maintain the grasp
                 damping=1e3, # bigger damping to avoid oscillations
             ),
