@@ -115,22 +115,22 @@ class SummitFrankaSceneCfg:
         actuators={
             "base": ImplicitActuatorCfg(
                 joint_names_expr=["base_x", "base_y", "base_z"],
-                effort_limit=5e3,
-                velocity_limit=1.5,
+                effort_limit_sim=5e3,
+                velocity_limit_sim=1.5,
                 stiffness=8e3,
                 damping=2e3,
             ),
             "arm": ImplicitActuatorCfg(
                 joint_names_expr=["panda_joint.*"],
-                effort_limit=5e3,
-                velocity_limit=2.175,
+                effort_limit_sim=5e3,
+                velocity_limit_sim=2.175,
                 stiffness=1e4,
                 damping=1e2,
             ),
             "gripper": ImplicitActuatorCfg(
                 joint_names_expr=["panda_finger_joint.*"],
-                effort_limit=5e3,
-                velocity_limit=0.2,
+                effort_limit_sim=5e3,
+                velocity_limit_sim=0.2,
                 stiffness=1e6,  # gripper needs higher stiffness to maintain the grasp
                 damping=1e3, # bigger damping to avoid oscillations
             ),
