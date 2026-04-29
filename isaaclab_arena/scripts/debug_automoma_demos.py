@@ -48,7 +48,7 @@ parser.add_argument(
     "--set_state",
     action="store_true",
     default=True,
-    help="Default to set_state (teleport) for debugging. Toggle to False for physics drive.",
+    help="Default to set_state replay for debugging. Toggle to False for physics drive.",
 )
 parser.add_argument(
     "--num_episodes",
@@ -85,7 +85,10 @@ import numpy as np
 import tqdm
 
 import isaaclab.envs.mdp as mdp_isaac_lab
-from isaaclab_arena.embodiments.summit_franka.summit_franka import SummitFrankaJointSpaceActionsCfg
+from isaaclab_arena.embodiments.summit_franka.summit_franka import (
+    SummitFrankaAutomomaSetStateActionsCfg,
+    SummitFrankaJointSpaceActionsCfg,
+)
 from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
 from isaaclab_arena.utils.sim_utils import (
     deactivate_prims_by_name,
@@ -151,7 +154,11 @@ def main():
     arena_builder = get_arena_builder_from_cli(args_cli)
     env_name, env_cfg = arena_builder.build_registered()
 
-    env_cfg.actions = SummitFrankaJointSpaceActionsCfg()
+    object_name = getattr(args_cli, "object_name", None)
+    if args_cli.set_state:
+        env_cfg.actions = SummitFrankaAutomomaSetStateActionsCfg(object_asset_name=object_name)
+    else:
+        env_cfg.actions = SummitFrankaJointSpaceActionsCfg()
     env_cfg.observations.policy.joint_pos = mdp_isaac_lab.ObservationTermCfg(func=mdp_isaac_lab.joint_pos)
     env_cfg.terminations.time_out = None
     if hasattr(env_cfg.terminations, "success"):
@@ -164,7 +171,6 @@ def main():
     env = gym.make(env_name, cfg=env_cfg).unwrapped
 
     # Scene fixes
-    object_name = getattr(args_cli, "object_name", None)
     if object_name:
         deactivate_prims_by_name(object_name, exclude_paths=(), required_path_substrings=("/scene/",))
     set_lighting_mode(2)
@@ -246,8 +252,7 @@ def main():
             policy.episode_index = actual_ep
             policy.reset()
             
-            if not args_cli.set_state:
-                policy.set_initial_state(env)
+            policy.set_initial_state(env)
             
             print(f"Visualizing Trajectory {actual_ep}/{policy.n_episodes}")
             for step in tqdm.tqdm(range(policy.n_steps), leave=False):

@@ -18,8 +18,8 @@ Two replay modes are supported:
   the planner's idealized trajectory.
 
 - **Set-state mode** (``--set_state``): Robot joints and object articulation state
-  are directly teleported each step. No physics simulation for the manipulation
-  itself — produces pixel-perfect replays of the planned trajectory.
+  are applied by a custom IsaacLab action term that writes joint state during
+  ``env.step(action)``. The policy still only supplies the next planned target.
 
 Additional options:
 
@@ -86,8 +86,8 @@ parser.add_argument(
     action="store_true",
     default=False,
     help=(
-        "If set, directly teleport robot joints and object state each step "
-        "(bypasses physics). Default: use physics-based drive mode."
+        "If set, replay robot and object joint targets through a set-state "
+        "IsaacLab action term. Default: use physics-based drive mode."
     ),
 )
 parser.add_argument(
@@ -161,7 +161,10 @@ from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManager
 from isaaclab.managers import DatasetExportMode, ObservationTermCfg as ObsTerm, RecorderTerm, RecorderTermCfg
 from isaaclab.utils import configclass
 
-from isaaclab_arena.embodiments.summit_franka.summit_franka import SummitFrankaJointSpaceActionsCfg
+from isaaclab_arena.embodiments.summit_franka.summit_franka import (
+    SummitFrankaAutomomaSetStateActionsCfg,
+    SummitFrankaJointSpaceActionsCfg,
+)
 from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
 from isaaclab_arena.utils.sim_utils import (
     deactivate_prims_by_name,
@@ -253,11 +256,14 @@ def main():
     arena_builder = get_arena_builder_from_cli(args_cli)
     env_name, env_cfg = arena_builder.build_registered()
 
-    # ---- Override action config for joint-space recording ----
-    # Instead of IK-based actions, use direct 12-DOF joint position actions.
-    # This makes the recorded `actions` and `processed_actions` both 12-DOF
-    # (3 base + 7 arm + 2 gripper), matching the conversion pipeline's expectations.
-    env_cfg.actions = SummitFrankaJointSpaceActionsCfg()
+    # ---- Override action config for trajectory recording ----
+    # Drive mode records 12D robot joint targets. Set-state mode records a
+    # robot+object target and applies it through IsaacLab's action manager.
+    object_name = getattr(args_cli, "object_name", None)
+    if args_cli.set_state:
+        env_cfg.actions = SummitFrankaAutomomaSetStateActionsCfg(object_asset_name=object_name)
+    else:
+        env_cfg.actions = SummitFrankaJointSpaceActionsCfg()
 
     # ---- Override observations to use absolute joint positions ----
     # The conversion pipeline expects absolute joint positions, not relative-to-default.
@@ -287,7 +293,6 @@ def main():
 
     # ---- Post-creation scene fixes ----
     # 1) Deactivate duplicate object prims baked into the background scene USD
-    object_name = getattr(args_cli, "object_name", None)
     if object_name:
         deactivate_prims_by_name(
             object_name,
@@ -315,7 +320,7 @@ def main():
     num_episodes = min(args_cli.num_episodes, policy.n_episodes - args_cli.start_episode)
     print(f"\n{'=' * 60}")
     print(f"Recording {num_episodes} episodes to {args_cli.dataset_file}")
-    print(f"Mode: {'set_state (teleport)' if args_cli.set_state else 'drive (physics)'}")
+    print(f"Mode: {'set_state (robot+object state action)' if args_cli.set_state else 'drive (physics)'}")
     print(f"Collision mode: {'disabled' if collisionless_replay else 'enabled'}")
     print(f"Steps per episode: {policy.n_steps} (raw={policy.n_raw_steps}, interp={args_cli.interpolated}x)")
     print(f"Mobile base relative: {args_cli.mobile_base_relative}")
@@ -335,10 +340,9 @@ def main():
         policy.episode_index = actual_ep
         policy.reset()
 
-        # In drive mode, teleport to trajectory start pose before physics replay
-        if not args_cli.set_state:
-            policy.set_initial_state(env)
-            obs = sync_cameras_after_reset(env)
+        # Align the first recorded observation with the trajectory start pose.
+        policy.set_initial_state(env)
+        obs = sync_cameras_after_reset(env)
 
         print(f"[Episode {ep_idx + 1}/{num_episodes}] (traj index {actual_ep})")
 

@@ -11,9 +11,9 @@ and replays joint positions in the simulator. Supports two modes:
 
 - **Drive mode** (default): Sends joint positions as actions to the robot's actuators,
   letting physics simulation handle contacts and friction.
-- **Set-state mode** (``--set_state``): Directly teleports the robot joints and object
-  articulation state each step, bypassing physics. Useful for generating pixel-perfect
-  demonstration data.
+- **Set-state mode** (``--set_state``): Returns robot and object joint targets as a
+  single action. A matching IsaacLab action term applies them by directly writing
+  joint state during ``env.step(action)``.
 
 Additional options:
 
@@ -63,14 +63,14 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
     In **drive mode** (default), the policy outputs joint position targets as actions
     at each step, allowing physics (friction, contacts) to determine the outcome.
 
-    In **set-state mode** (``set_state=True``), the policy directly writes joint
-    positions to the robot articulation and the object articulation each step,
-    bypassing physics entirely.
+    In **set-state mode** (``set_state=True``), the policy returns robot and
+    object joint targets as one action. The environment must use the matching
+    AutoMoMa set-state action term to apply those targets.
 
     Args:
         traj_file: Path to the .pt trajectory data file.
         episode_index: Which episode to replay (0-indexed). Defaults to 0.
-        set_state: If True, directly set joint states instead of sending actions.
+        set_state: If True, return robot + object state targets as the action.
         device: Torch device string.
         only_successful: If True (default), skip episodes where traj_success is False.
         interpolation_factor: Factor to interpolate between trajectory keyframes.
@@ -253,9 +253,10 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         """
         Get the action for the current step.
 
-        Always returns the trajectory joint positions as the action tensor (so
-        the recorder captures correct values).  In set-state mode the joint
-        states are additionally written directly into the simulator.
+        Always returns trajectory joint targets as the action tensor so the
+        recorder captures the planned command. In set-state mode the action
+        includes the trailing object joint target; simulator writes are handled
+        by the environment action term, not by this policy.
 
         Args:
             env: The gymnasium environment.
@@ -269,26 +270,24 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
 
         if self._current_step >= self._n_steps:
             # Episode finished — return zeros to keep env alive
-            return torch.zeros(env.action_space.shape, device=dev)
+            return torch.zeros((getattr(unwrapped, "num_envs", 1), env.action_space.shape[-1]), device=dev)
 
         robot_target = self._traj_robot[self._episode_index, self._current_step].clone()
-        obj_target = self._traj_obj[self._episode_index, self._current_step]
+        obj_target = self._traj_obj[self._episode_index, self._current_step].clone()
 
         if self.set_state:
-            # Directly set joint states — bypass physics
-            self._set_robot_joint_state(env, robot_target)
-            self._set_object_joint_state(env, obj_target)
-            self._sync_written_state(env)
+            action = torch.cat([robot_target, obj_target], dim=-1).unsqueeze(0).to(dev)
+        else:
+            action = robot_target.unsqueeze(0).to(dev)
 
-        # Build the action tensor (absolute joint positions)
-        action = robot_target.unsqueeze(0).to(dev)
-
-        # Pad/trim to match action space
         expected_dim = env.action_space.shape[-1]
-        if action.shape[-1] < expected_dim:
-            action = torch.nn.functional.pad(action, (0, expected_dim - action.shape[-1]))
-        elif action.shape[-1] > expected_dim:
-            action = action[..., :expected_dim]
+        if action.shape[-1] != expected_dim:
+            mode = "set-state" if self.set_state else "drive"
+            raise ValueError(
+                f"ReplayAutomomaTrajectoryPolicy produced a {action.shape[-1]}D {mode} action, "
+                f"but the environment expects {expected_dim}D. "
+                "Check that env_cfg.actions matches the replay mode."
+            )
 
         self._current_step += 1
         return action
@@ -327,8 +326,8 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
     def set_initial_state(self, env: gym.Env) -> None:
         """Set the robot and object to the trajectory's starting state.
 
-        Useful in **drive mode** to teleport the robot to the correct start
-        configuration before physics-driven replay begins.
+        Useful to align the first observation with the planned start
+        configuration before replay begins.
         """
         self._set_robot_joint_state(env, self.get_start_robot_joints())
         self._set_object_joint_state(env, self.get_start_obj_joints())
