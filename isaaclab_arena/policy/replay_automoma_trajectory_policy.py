@@ -293,16 +293,18 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         return action
 
     def _set_robot_joint_state(self, env: gym.Env, joint_positions: torch.Tensor) -> None:
-        """Directly set robot joint positions and zero velocities."""
+        """Directly set robot joint positions and hold targets."""
         unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
         robot = unwrapped.scene["robot"]
         n_joints = min(joint_positions.shape[0], robot.num_joints)
         joint_pos = joint_positions[:n_joints].unsqueeze(0).to(unwrapped.device)
         joint_vel = torch.zeros_like(joint_pos)
         robot.write_joint_state_to_sim(joint_pos, joint_vel)
+        robot.set_joint_position_target(joint_pos)
+        robot.set_joint_velocity_target(joint_vel)
 
     def _set_object_joint_state(self, env: gym.Env, joint_positions: torch.Tensor) -> None:
-        """Directly set object (articulation) joint positions and zero velocities."""
+        """Directly set object (articulation) joint positions and hold targets."""
         unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
         for key in unwrapped.scene.keys():
             if key == "robot":
@@ -313,25 +315,35 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
                 joint_pos = joint_positions[:n_joints].unsqueeze(0).to(unwrapped.device)
                 joint_vel = torch.zeros_like(joint_pos)
                 entity.write_joint_state_to_sim(joint_pos, joint_vel)
+                if hasattr(entity, "set_joint_position_target"):
+                    entity.set_joint_position_target(joint_pos)
+                if hasattr(entity, "set_joint_velocity_target"):
+                    entity.set_joint_velocity_target(joint_vel)
                 break
 
-    def _sync_written_state(self, env: gym.Env) -> None:
+    def _sync_written_state(self, env: gym.Env, *, step: bool = False, render: bool = True) -> None:
         """Flush recently written articulation state to sim-side buffers."""
         unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
         unwrapped.scene.write_data_to_sim()
-        if hasattr(unwrapped.sim, "render"):
+        if step:
+            unwrapped.sim.step(render=render)
+        elif render and hasattr(unwrapped.sim, "render"):
             unwrapped.sim.render()
         unwrapped.scene.update(unwrapped.physics_dt)
 
-    def set_initial_state(self, env: gym.Env) -> None:
+    def set_initial_state(self, env: gym.Env, init_steps: int = 1, render: bool = True) -> None:
         """Set the robot and object to the trajectory's starting state.
 
         Useful to align the first observation with the planned start
         configuration before replay begins.
         """
-        self._set_robot_joint_state(env, self.get_start_robot_joints())
-        self._set_object_joint_state(env, self.get_start_obj_joints())
-        self._sync_written_state(env)
+        if init_steps < 1:
+            raise ValueError("init_steps must be >= 1.")
+
+        for _ in range(init_steps):
+            self._set_robot_joint_state(env, self.get_start_robot_joints())
+            self._set_object_joint_state(env, self.get_start_obj_joints())
+            self._sync_written_state(env, step=True, render=render)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset the step counter for the current episode."""

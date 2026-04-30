@@ -65,6 +65,7 @@ from isaaclab_arena.examples.example_environments.cli import (
     add_example_environments_cli_args,
     get_arena_builder_from_cli,
 )
+from isaaclab_arena.utils.automoma_record_debug import add_record_debug_args, make_record_debugger
 
 # ---- CLI arguments ----
 parser = get_isaaclab_arena_cli_parser()
@@ -139,6 +140,7 @@ parser.add_argument(
     ),
 )
 
+add_record_debug_args(parser)
 add_example_environments_cli_args(parser)
 args_cli = parser.parse_args()
 
@@ -151,12 +153,10 @@ simulation_app = app_launcher.app
 import os
 
 import h5py
-import numpy as np
 import torch
 import tqdm
 
 import isaaclab.envs.mdp as mdp_isaac_lab
-import isaaclab.sim as sim_utils
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
 from isaaclab.managers import DatasetExportMode, ObservationTermCfg as ObsTerm, RecorderTerm, RecorderTermCfg
 from isaaclab.utils import configclass
@@ -256,6 +256,9 @@ def main():
     arena_builder = get_arena_builder_from_cli(args_cli)
     env_name, env_cfg = arena_builder.build_registered()
 
+    record_debugger = make_record_debugger(args_cli)
+    record_debugger.configure_env(env_cfg, enable_cameras=args_cli.enable_cameras)
+
     # ---- Override action config for trajectory recording ----
     # Drive mode records 12D robot joint targets. Set-state mode records a
     # robot+object target and applies it through IsaacLab's action manager.
@@ -317,6 +320,9 @@ def main():
         interpolation_factor=args_cli.interpolated,
     )
 
+    record_debugger.setup(env, env_cfg, policy)
+    init_steps = record_debugger.init_steps
+
     num_episodes = min(args_cli.num_episodes, policy.n_episodes - args_cli.start_episode)
     print(f"\n{'=' * 60}")
     print(f"Recording {num_episodes} episodes to {args_cli.dataset_file}")
@@ -324,6 +330,7 @@ def main():
     print(f"Collision mode: {'disabled' if collisionless_replay else 'enabled'}")
     print(f"Steps per episode: {policy.n_steps} (raw={policy.n_raw_steps}, interp={args_cli.interpolated}x)")
     print(f"Mobile base relative: {args_cli.mobile_base_relative}")
+    print(f"Initial state-write Isaac Sim steps: {init_steps}")
     print(f"{'=' * 60}\n")
 
     recorded_count = 0
@@ -341,15 +348,21 @@ def main():
         policy.reset()
 
         # Align the first recorded observation with the trajectory start pose.
-        policy.set_initial_state(env)
+        policy.set_initial_state(env, init_steps=init_steps, render=record_debugger.render_initial_state)
         obs = sync_cameras_after_reset(env)
 
         print(f"[Episode {ep_idx + 1}/{num_episodes}] (traj index {actual_ep})")
+        record_debugger.begin_episode(ep_idx, actual_ep)
+        record_debugger.after_initial_state(env, policy)
 
         for step in tqdm.tqdm(range(policy.n_steps), desc=f"  Episode {ep_idx + 1}", leave=False):
             with torch.no_grad():
                 action = policy.get_action(env, obs)
+            debug_step_state = record_debugger.before_step(env, policy, action, step)
             obs, _, terminated, truncated, _ = env.step(action)
+            record_debugger.after_step(env, debug_step_state, step)
+
+        record_debugger.end_episode()
 
         # Mark episode as successful
         env.recorder_manager.set_success_to_episodes(
@@ -372,6 +385,7 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Recording complete: {recorded_count} episodes saved to {args_cli.dataset_file}")
     print(f"{'=' * 60}")
+    record_debugger.finish(args_cli.dataset_file)
 
     env.close()
 
