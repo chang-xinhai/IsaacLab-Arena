@@ -1,8 +1,7 @@
 """Debug helpers for AutoMoMa demonstration recording.
 
 This module keeps verbose diagnostics out of ``record_automoma_demos.py`` while
-still letting the record script opt into joint, handle, and replay-configuration
-debugging from the CLI.
+letting the record script opt into joint and handle tracking from the CLI.
 """
 
 from __future__ import annotations
@@ -16,7 +15,16 @@ from typing import Any
 
 
 def add_record_debug_args(parser: Any) -> None:
-    """Register optional record/debug arguments on the record CLI parser."""
+    """Register optional tracking diagnostics on the record CLI parser."""
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable artifact-only AutoMoMa record diagnostics. This records joint and "
+            "handle tracking data and writes CSV/PNG curves at the end without per-step prints."
+        ),
+    )
     parser.add_argument(
         "--debug_joint_tracking",
         action="store_true",
@@ -80,58 +88,11 @@ def add_record_debug_args(parser: Any) -> None:
         default=10,
         help="Also print every N steps when --debug_handle_tracking is set. Use 0 to disable interval prints.",
     )
-    parser.add_argument(
-        "--record_decimation",
-        type=int,
-        default=None,
-        help=(
-            "Override env_cfg.decimation for replay/record debugging. Higher values "
-            "hold each action target for more physics steps."
-        ),
-    )
-    parser.add_argument(
-        "--record_render_interval",
-        type=int,
-        default=None,
-        help=(
-            "Override env_cfg.sim.render_interval for replay/record debugging. "
-            "If omitted with --record_decimation, it defaults to the decimation value."
-        ),
-    )
-    parser.add_argument(
-        "--record_actuator_stiffness_scale",
-        type=float,
-        default=1.0,
-        help="Scale robot actuator stiffness before creating the replay environment.",
-    )
-    parser.add_argument(
-        "--record_actuator_damping_scale",
-        type=float,
-        default=1.0,
-        help="Scale robot actuator damping before creating the replay environment.",
-    )
-    parser.add_argument(
-        "--record_actuator_effort_scale",
-        type=float,
-        default=1.0,
-        help="Scale robot actuator effort limits before creating the replay environment.",
-    )
-    parser.add_argument(
-        "--record_camera_width",
-        type=int,
-        default=None,
-        help="Override enabled camera width for replay/record debugging.",
-    )
-    parser.add_argument(
-        "--record_camera_height",
-        type=int,
-        default=None,
-        help="Override enabled camera height for replay/record debugging.",
-    )
 
 
 @dataclass(frozen=True)
 class RecordDebugConfig:
+    artifact_only: bool
     joint_tracking: bool
     joint_tracking_steps: int
     joint_tracking_interval: int
@@ -142,34 +103,22 @@ class RecordDebugConfig:
     handle_tracking: bool
     handle_tracking_steps: int
     handle_tracking_interval: int
-    record_decimation: int | None
-    record_render_interval: int | None
-    record_actuator_stiffness_scale: float
-    record_actuator_damping_scale: float
-    record_actuator_effort_scale: float
-    record_camera_width: int | None
-    record_camera_height: int | None
 
     @classmethod
     def from_args(cls, args: Any) -> "RecordDebugConfig":
+        artifact_only = bool(args.debug)
         return cls(
-            joint_tracking=bool(args.debug_joint_tracking),
-            joint_tracking_steps=args.debug_joint_tracking_steps,
-            joint_tracking_interval=args.debug_joint_tracking_interval,
+            artifact_only=artifact_only,
+            joint_tracking=artifact_only or bool(args.debug_joint_tracking),
+            joint_tracking_steps=0 if artifact_only else args.debug_joint_tracking_steps,
+            joint_tracking_interval=0 if artifact_only else args.debug_joint_tracking_interval,
             joint_tracking_topk=args.debug_joint_tracking_topk,
             joint_tracking_tolerance=args.debug_joint_tracking_tolerance,
             joint_tracking_fk_link=args.debug_joint_tracking_fk_link,
             joint_tracking_no_fk=bool(args.debug_joint_tracking_no_fk),
             handle_tracking=bool(args.debug_handle_tracking),
-            handle_tracking_steps=args.debug_handle_tracking_steps,
-            handle_tracking_interval=args.debug_handle_tracking_interval,
-            record_decimation=args.record_decimation,
-            record_render_interval=args.record_render_interval,
-            record_actuator_stiffness_scale=args.record_actuator_stiffness_scale,
-            record_actuator_damping_scale=args.record_actuator_damping_scale,
-            record_actuator_effort_scale=args.record_actuator_effort_scale,
-            record_camera_width=args.record_camera_width,
-            record_camera_height=args.record_camera_height,
+            handle_tracking_steps=0 if artifact_only else args.debug_handle_tracking_steps,
+            handle_tracking_interval=0 if artifact_only else args.debug_handle_tracking_interval,
         )
 
     @property
@@ -276,87 +225,6 @@ class _PinocchioFkDebugger:
         position = torch.from_numpy(np.array(placement.translation, copy=True)).float()
         rotation = torch.from_numpy(np.array(placement.rotation, copy=True)).float()
         return position, rotation
-
-
-def _scale_numeric_or_mapping(value: Any, scale: float) -> Any:
-    if value is None:
-        return value
-    if isinstance(value, dict):
-        return {key: _scale_numeric_or_mapping(item, scale) for key, item in value.items()}
-    if isinstance(value, (float, int)):
-        return float(value) * scale
-    return value
-
-
-def _scale_robot_actuator_cfgs(env_cfg: Any, config: RecordDebugConfig) -> None:
-    scale_fields = (
-        ("stiffness", config.record_actuator_stiffness_scale, "--record_actuator_stiffness_scale"),
-        ("damping", config.record_actuator_damping_scale, "--record_actuator_damping_scale"),
-        ("effort_limit_sim", config.record_actuator_effort_scale, "--record_actuator_effort_scale"),
-    )
-    if all(scale == 1.0 for _, scale, _ in scale_fields):
-        return
-
-    robot_cfg = getattr(getattr(env_cfg, "scene", None), "robot", None)
-    actuator_cfgs = getattr(robot_cfg, "actuators", None)
-    if not actuator_cfgs:
-        print("[RecordActuatorScale] Warning: no robot actuator configs found.", flush=True)
-        return
-
-    print("[RecordActuatorScale] Applying robot actuator debug scales:", flush=True)
-    for actuator_name, actuator_cfg in actuator_cfgs.items():
-        changed_parts = []
-        for field_name, scale, arg_name in scale_fields:
-            if scale <= 0.0:
-                raise ValueError(f"{arg_name} must be > 0.")
-            if scale == 1.0 or not hasattr(actuator_cfg, field_name):
-                continue
-            original_value = getattr(actuator_cfg, field_name)
-            setattr(actuator_cfg, field_name, _scale_numeric_or_mapping(original_value, scale))
-            changed_parts.append(f"{field_name}x{scale:g}")
-        if changed_parts:
-            print(f"  {actuator_name}: {', '.join(changed_parts)}", flush=True)
-
-
-def _override_camera_resolution(env_cfg: Any, config: RecordDebugConfig, enable_cameras: bool) -> None:
-    if config.record_camera_width is None and config.record_camera_height is None:
-        return
-    if not enable_cameras:
-        print(
-            "[RecordCameraResolution] Warning: --enable_cameras is false; no camera resolution override applied.",
-            flush=True,
-        )
-        return
-
-    width = config.record_camera_width
-    height = config.record_camera_height
-    if width is not None and width <= 0:
-        raise ValueError("--record_camera_width must be > 0.")
-    if height is not None and height <= 0:
-        raise ValueError("--record_camera_height must be > 0.")
-
-    changed_parts = []
-    scene_cfg = getattr(env_cfg, "scene", None)
-    if scene_cfg is None:
-        print("[RecordCameraResolution] Warning: env_cfg has no scene config.", flush=True)
-        return
-    for camera_name, camera_cfg in vars(scene_cfg).items():
-        if not hasattr(camera_cfg, "width") or not hasattr(camera_cfg, "height"):
-            continue
-        old_width = getattr(camera_cfg, "width")
-        old_height = getattr(camera_cfg, "height")
-        if width is not None:
-            camera_cfg.width = width
-        if height is not None:
-            camera_cfg.height = height
-        changed_parts.append(f"{camera_name}: {old_width}x{old_height}->{camera_cfg.width}x{camera_cfg.height}")
-
-    if changed_parts:
-        print("[RecordCameraResolution] Applying camera resolution overrides:", flush=True)
-        for part in changed_parts:
-            print(f"  {part}", flush=True)
-    else:
-        print("[RecordCameraResolution] Warning: no camera configs found to override.", flush=True)
 
 
 def _resolve_robot_action_term(env: Any) -> tuple[str, Any]:
@@ -680,6 +548,76 @@ def _safe_csv_name(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name)
 
 
+def _wrap_joint_names(joint_names: list[str], names_per_line: int = 3) -> str:
+    lines = []
+    for index in range(0, len(joint_names), names_per_line):
+        lines.append(", ".join(joint_names[index : index + names_per_line]))
+    return "\n".join(lines)
+
+
+def _find_over_threshold_peaks(values: list[float], threshold: float) -> list[int]:
+    peaks = []
+    start = None
+    for index, value in enumerate(values):
+        if value > threshold:
+            if start is None:
+                start = index
+            continue
+        if start is not None:
+            segment = range(start, index)
+            peaks.append(max(segment, key=lambda item: values[item]))
+            start = None
+    if start is not None:
+        segment = range(start, len(values))
+        peaks.append(max(segment, key=lambda item: values[item]))
+    return peaks
+
+
+def _annotate_all_joint_error_peaks(
+    ax: Any,
+    plot_x: list[int],
+    all_joint_curve: list[float],
+    over_threshold_joints: list[list[str]],
+    threshold: float,
+) -> None:
+    peak_indices = _find_over_threshold_peaks(all_joint_curve, threshold)
+    if not peak_indices:
+        return
+
+    for annotation_index, peak_index in enumerate(peak_indices):
+        joints = over_threshold_joints[peak_index]
+        if not joints:
+            continue
+        x = plot_x[peak_index]
+        y = all_joint_curve[peak_index]
+        label = f">{threshold:g}: " + _wrap_joint_names(joints)
+        y_offset = 16 + (annotation_index % 3) * 10
+        ax.scatter([x], [y], color="tab:orange", s=24, zorder=5)
+        ax.annotate(
+            label,
+            xy=(x, y),
+            xytext=(0, y_offset),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=7,
+            color="tab:orange",
+            arrowprops={
+                "arrowstyle": "-",
+                "color": "tab:orange",
+                "alpha": 0.7,
+                "linewidth": 0.8,
+            },
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "facecolor": "white",
+                "edgecolor": "tab:orange",
+                "alpha": 0.78,
+                "linewidth": 0.6,
+            },
+        )
+
+
 def _write_joint_tracking_artifacts(
     records: list[dict],
     joint_names: list[str] | None,
@@ -730,6 +668,7 @@ def _write_joint_tracking_artifacts(
     fk_curve = []
     object_joint_curve = []
     object_target_curve = []
+    over_threshold_joints = []
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -820,6 +759,13 @@ def _write_joint_tracking_artifacts(
             fk_curve.append(fk_pos)
             object_joint_curve.append(object_joint_pos)
             object_target_curve.append(object_joint_target)
+            over_threshold_joints.append(
+                [
+                    joint_name
+                    for joint_name, abs_value in zip(joint_names, abs_error.tolist())
+                    if abs_value > tolerance
+                ]
+            )
 
     try:
         import matplotlib
@@ -832,6 +778,15 @@ def _write_joint_tracking_artifacts(
         ax.plot(plot_x, all_joint_curve, linewidth=1.4, label="all-joint max abs error (m/rad)")
         ax.plot(plot_x, fk_curve, linewidth=1.4, label="fk_eef position error (m)")
         ax.axhline(tolerance, color="red", linestyle="--", linewidth=0.9, alpha=0.55)
+        finite_error_values = [
+            value
+            for curve in (base_curve, all_joint_curve, fk_curve)
+            for value in curve
+            if np.isfinite(value)
+        ]
+        if finite_error_values:
+            ax.set_ylim(top=max(max(finite_error_values), tolerance) * 1.35)
+        _annotate_all_joint_error_peaks(ax, plot_x, all_joint_curve, over_threshold_joints, tolerance)
         ax.set_title(f"Joint tracking error: {dataset_path.stem}")
         ax.set_xlabel("recorded tracking sample")
         ax.set_ylabel("error magnitude")
@@ -1049,28 +1004,14 @@ class RecordDebugHooks:
         self.openable_object = None
         self.joint_tracking_records: list[dict] = []
         self.episode_joint_tracking_records: list[dict] = []
-        self.handle_tracking_records: list[dict[str, float]] = []
-        self.episode_handle_tracking_records: list[dict[str, float]] = []
+        self.handle_tracking_records: list[dict[str, Any]] = []
+        self.episode_handle_tracking_records: list[dict[str, Any]] = []
         self.episode_index = 0
         self.traj_index = 0
 
     @property
     def tracking_enabled(self) -> bool:
         return self.config.tracking_enabled
-
-    def configure_env(self, env_cfg: Any, enable_cameras: bool) -> None:
-        if self.config.record_decimation is not None:
-            if self.config.record_decimation <= 0:
-                raise ValueError("--record_decimation must be > 0.")
-            env_cfg.decimation = self.config.record_decimation
-            if self.config.record_render_interval is None:
-                env_cfg.sim.render_interval = self.config.record_decimation
-        if self.config.record_render_interval is not None:
-            if self.config.record_render_interval <= 0:
-                raise ValueError("--record_render_interval must be > 0.")
-            env_cfg.sim.render_interval = self.config.record_render_interval
-        _scale_robot_actuator_cfgs(env_cfg, self.config)
-        _override_camera_resolution(env_cfg, self.config, enable_cameras)
 
     def setup(self, env: Any, env_cfg: Any, policy: Any) -> None:
         if not self.tracking_enabled:
@@ -1081,47 +1022,52 @@ class RecordDebugHooks:
         if self.config.joint_tracking:
             term_name, self.joint_tracking_term = _resolve_robot_action_term(env)
             self.joint_tracking_joint_names = list(getattr(self.joint_tracking_term, "_joint_names", []))
-            print(f"[JointTracking] action_term={term_name}", flush=True)
-            print(f"[JointTracking] joint_names={self.joint_tracking_joint_names}", flush=True)
+            if not self.config.artifact_only:
+                print(f"[JointTracking] action_term={term_name}", flush=True)
+                print(f"[JointTracking] joint_names={self.joint_tracking_joint_names}", flush=True)
             if not self.config.joint_tracking_no_fk:
                 try:
                     self.joint_tracking_fk = _PinocchioFkDebugger(
                         self.joint_tracking_joint_names,
                         self.config.joint_tracking_fk_link,
                     )
-                    print(
-                        f"[JointTracking][fk] link={self.joint_tracking_fk.link_name} "
-                        f"urdf={self.joint_tracking_fk.urdf_path}",
-                        flush=True,
-                    )
+                    if not self.config.artifact_only:
+                        print(
+                            f"[JointTracking][fk] link={self.joint_tracking_fk.link_name} "
+                            f"urdf={self.joint_tracking_fk.urdf_path}",
+                            flush=True,
+                        )
                 except Exception as exc:
+                    if not self.config.artifact_only:
+                        print(
+                            f"[JointTracking][fk] Warning: could not initialize FK diagnostics: {exc}",
+                            flush=True,
+                        )
+            if not policy.set_state and not self.config.artifact_only:
+                _print_drive_velocity_feasibility(policy, env, self.joint_tracking_term)
+            if not self.config.artifact_only:
+                if self.openable_object is None:
                     print(
-                        f"[JointTracking][fk] Warning: could not initialize FK diagnostics: {exc}",
+                        "[JointTracking][object] Warning: could not resolve openable object; "
+                        "door angle will not be written to the debug curve.",
                         flush=True,
                     )
-            if not policy.set_state:
-                _print_drive_velocity_feasibility(policy, env, self.joint_tracking_term)
-            if self.openable_object is None:
-                print(
-                    "[JointTracking][object] Warning: could not resolve openable object; "
-                    "door angle will not be written to the debug curve.",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"[JointTracking][object] object={self.openable_object.name} "
-                    f"joint={self.openable_object.openable_joint_name}",
-                    flush=True,
-                )
+                else:
+                    print(
+                        f"[JointTracking][object] object={self.openable_object.name} "
+                        f"joint={self.openable_object.openable_joint_name}",
+                        flush=True,
+                    )
 
         if self.config.handle_tracking:
             if self.openable_object is None:
                 raise RuntimeError("Could not resolve the openable object for handle tracking diagnostics.")
-            print(
-                f"[HandleTracking] object={self.openable_object.name} "
-                f"handle_link={self.openable_object.handle_link_name}",
-                flush=True,
-            )
+            if not self.config.artifact_only:
+                print(
+                    f"[HandleTracking] object={self.openable_object.name} "
+                    f"handle_link={self.openable_object.handle_link_name}",
+                    flush=True,
+                )
 
     def begin_episode(self, episode_index: int, traj_index: int) -> None:
         self.episode_index = episode_index
@@ -1131,6 +1077,8 @@ class RecordDebugHooks:
 
     def after_initial_state(self, env: Any, policy: Any) -> None:
         if not self.config.joint_tracking:
+            return
+        if self.config.artifact_only:
             return
 
         start_target = policy.get_start_robot_joints().unsqueeze(0).to(env.device)
@@ -1207,6 +1155,13 @@ class RecordDebugHooks:
 
         if self.config.handle_tracking:
             handle_stats = _handle_tracking_stats(env, self.openable_object, target_obj)
+            handle_stats.update(
+                {
+                    "episode": self.episode_index,
+                    "traj": self.traj_index,
+                    "step": step,
+                }
+            )
             if self._should_print_handle_tracking(step):
                 _print_handle_tracking(
                     episode_index=self.episode_index,
@@ -1218,6 +1173,8 @@ class RecordDebugHooks:
             self.episode_handle_tracking_records.append(handle_stats)
 
     def end_episode(self) -> None:
+        if self.config.artifact_only:
+            return
         if self.config.joint_tracking:
             _summarize_joint_tracking(
                 self.episode_joint_tracking_records,
@@ -1234,12 +1191,13 @@ class RecordDebugHooks:
 
     def finish(self, dataset_file: str) -> None:
         if self.config.joint_tracking:
-            _summarize_joint_tracking(
-                self.joint_tracking_records,
-                self.config.joint_tracking_tolerance,
-                self.config.joint_tracking_topk,
-                joint_names=self.joint_tracking_joint_names,
-            )
+            if not self.config.artifact_only:
+                _summarize_joint_tracking(
+                    self.joint_tracking_records,
+                    self.config.joint_tracking_tolerance,
+                    self.config.joint_tracking_topk,
+                    joint_names=self.joint_tracking_joint_names,
+                )
             _write_joint_tracking_artifacts(
                 self.joint_tracking_records,
                 self.joint_tracking_joint_names,
@@ -1247,7 +1205,8 @@ class RecordDebugHooks:
                 self.config.joint_tracking_tolerance,
             )
         if self.config.handle_tracking:
-            _summarize_handle_tracking(self.handle_tracking_records)
+            if not self.config.artifact_only:
+                _summarize_handle_tracking(self.handle_tracking_records)
 
     def _should_print_joint_tracking(self, step: int) -> bool:
         if step < self.config.joint_tracking_steps:

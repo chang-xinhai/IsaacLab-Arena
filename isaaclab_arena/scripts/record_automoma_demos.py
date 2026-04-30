@@ -269,7 +269,6 @@ def main():
     env_name, env_cfg = arena_builder.build_registered()
 
     record_debugger = make_record_debugger(args_cli)
-    record_debugger.configure_env(env_cfg, enable_cameras=args_cli.enable_cameras)
 
     # ---- Override action config for trajectory recording ----
     # Drive mode records 12D robot joint targets. Set-state mode records a
