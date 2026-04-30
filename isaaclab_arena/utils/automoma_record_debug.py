@@ -81,21 +81,6 @@ def add_record_debug_args(parser: Any) -> None:
         help="Also print every N steps when --debug_handle_tracking is set. Use 0 to disable interval prints.",
     )
     parser.add_argument(
-        "--record_init_steps",
-        type=int,
-        default=1,
-        help=(
-            "Number of Isaac Sim steps to hold the trajectory start state before "
-            "recording each episode."
-        ),
-    )
-    parser.add_argument(
-        "--record_init_render",
-        action="store_true",
-        default=False,
-        help="Render during the initial start-state hold steps.",
-    )
-    parser.add_argument(
         "--record_decimation",
         type=int,
         default=None,
@@ -157,8 +142,6 @@ class RecordDebugConfig:
     handle_tracking: bool
     handle_tracking_steps: int
     handle_tracking_interval: int
-    record_init_steps: int
-    record_init_render: bool
     record_decimation: int | None
     record_render_interval: int | None
     record_actuator_stiffness_scale: float
@@ -180,8 +163,6 @@ class RecordDebugConfig:
             handle_tracking=bool(args.debug_handle_tracking),
             handle_tracking_steps=args.debug_handle_tracking_steps,
             handle_tracking_interval=args.debug_handle_tracking_interval,
-            record_init_steps=args.record_init_steps,
-            record_init_render=bool(args.record_init_render),
             record_decimation=args.record_decimation,
             record_render_interval=args.record_render_interval,
             record_actuator_stiffness_scale=args.record_actuator_stiffness_scale,
@@ -1077,18 +1058,7 @@ class RecordDebugHooks:
     def tracking_enabled(self) -> bool:
         return self.config.tracking_enabled
 
-    @property
-    def init_steps(self) -> int:
-        return self.config.record_init_steps
-
-    @property
-    def render_initial_state(self) -> bool:
-        return self.config.record_init_render
-
     def configure_env(self, env_cfg: Any, enable_cameras: bool) -> None:
-        if self.config.record_init_steps < 1:
-            raise ValueError("--record_init_steps must be >= 1.")
-
         if self.config.record_decimation is not None:
             if self.config.record_decimation <= 0:
                 raise ValueError("--record_decimation must be > 0.")

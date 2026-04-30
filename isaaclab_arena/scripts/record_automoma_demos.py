@@ -139,6 +139,15 @@ parser.add_argument(
         "interpenetration."
     ),
 )
+parser.add_argument(
+    "--init_steps",
+    type=int,
+    default=1,
+    help=(
+        "Number of Isaac Sim steps to hold the trajectory start state before "
+        "recording each episode."
+    ),
+)
 
 add_record_debug_args(parser)
 add_example_environments_cli_args(parser)
@@ -243,6 +252,9 @@ def _postprocess_mobile_base_relative(dataset_file: str, base_dof: int = 3) -> N
 
 
 def main():
+    if args_cli.init_steps < 1:
+        raise ValueError("--init_steps must be >= 1.")
+
     collisionless_replay = args_cli.set_state or args_cli.disable_collision
 
     # ---- Setup output ----
@@ -321,7 +333,7 @@ def main():
     )
 
     record_debugger.setup(env, env_cfg, policy)
-    init_steps = record_debugger.init_steps
+    init_steps = args_cli.init_steps
 
     num_episodes = min(args_cli.num_episodes, policy.n_episodes - args_cli.start_episode)
     print(f"\n{'=' * 60}")
@@ -348,7 +360,7 @@ def main():
         policy.reset()
 
         # Align the first recorded observation with the trajectory start pose.
-        policy.set_initial_state(env, init_steps=init_steps, render=record_debugger.render_initial_state)
+        policy.set_initial_state(env, init_steps=init_steps, render=True)
         obs = sync_cameras_after_reset(env)
 
         print(f"[Episode {ep_idx + 1}/{num_episodes}] (traj index {actual_ep})")
