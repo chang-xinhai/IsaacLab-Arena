@@ -116,7 +116,7 @@ class RecordDebugConfig:
             joint_tracking_tolerance=args.debug_joint_tracking_tolerance,
             joint_tracking_fk_link=args.debug_joint_tracking_fk_link,
             joint_tracking_no_fk=bool(args.debug_joint_tracking_no_fk),
-            handle_tracking=bool(args.debug_handle_tracking),
+            handle_tracking=artifact_only or bool(args.debug_handle_tracking),
             handle_tracking_steps=0 if artifact_only else args.debug_handle_tracking_steps,
             handle_tracking_interval=0 if artifact_only else args.debug_handle_tracking_interval,
         )
@@ -881,6 +881,102 @@ def _summarize_handle_tracking(records: list[dict[str, float]], label: str = "su
     )
 
 
+def _write_handle_tracking_artifacts(
+    records: list[dict[str, Any]],
+    dataset_file: str,
+) -> tuple[Path | None, Path | None]:
+    if not records:
+        return None, None
+
+    import numpy as np
+
+    dataset_path = Path(dataset_file)
+    output_dir = dataset_path.parent / "debug_curves"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_name = f"{dataset_path.stem}-handle-tracking"
+    csv_path = _make_unique_output_path(output_dir / f"{base_name}.csv")
+    png_path = _make_unique_output_path(output_dir / f"{base_name}.png")
+
+    fieldnames = [
+        "sample",
+        "episode",
+        "traj",
+        "step",
+        "handle_distance",
+        "openness",
+        "target_openness",
+        "open_error",
+    ]
+    plot_x = []
+    distances = []
+    openness = []
+    target_openness = []
+
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for sample, record in enumerate(records):
+            target = record.get("target_openness")
+            open_value = float(record["openness"])
+            target_value = float(target) if target is not None else float("nan")
+            distance = float(record["handle_distance"])
+            row = {
+                "sample": sample,
+                "episode": record["episode"],
+                "traj": record["traj"],
+                "step": record["step"],
+                "handle_distance": distance,
+                "openness": open_value,
+                "target_openness": target_value,
+                "open_error": open_value - target_value if np.isfinite(target_value) else float("nan"),
+            }
+            writer.writerow(row)
+            plot_x.append(sample)
+            distances.append(distance)
+            openness.append(open_value)
+            target_openness.append(target_value)
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(12, 6), constrained_layout=True)
+        ax.plot(plot_x, distances, linewidth=1.4, label="handle distance (m)")
+        ax.axhline(0.1, color="red", linestyle="--", linewidth=0.9, alpha=0.55, label="0.1m engagement")
+        ax.set_xlabel("recorded tracking sample")
+        ax.set_ylabel("handle distance (m)")
+        ax.grid(True, alpha=0.25)
+
+        ax2 = ax.twinx()
+        ax2.plot(plot_x, openness, color="black", linewidth=1.2, label="door openness")
+        if np.isfinite(np.asarray(target_openness, dtype=np.float64)).any():
+            ax2.plot(
+                plot_x,
+                target_openness,
+                color="black",
+                linestyle=":",
+                linewidth=1.0,
+                label="target openness",
+            )
+        ax2.set_ylabel("door openness")
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc="upper right")
+        ax.set_title(f"Handle tracking: {dataset_path.stem}")
+        fig.savefig(png_path, dpi=180)
+        plt.close(fig)
+    except Exception as exc:
+        print(f"[HandleTracking][curve] Warning: failed to write plot {png_path}: {exc}", flush=True)
+        png_path = None
+
+    print(f"[HandleTracking][curve] csv={csv_path}", flush=True)
+    if png_path is not None:
+        print(f"[HandleTracking][curve] png={png_path}", flush=True)
+    return csv_path, png_path
+
+
 def _read_actuator_velocity_limits(env: Any, term: Any) -> Any | None:
     import torch
 
@@ -1207,6 +1303,7 @@ class RecordDebugHooks:
         if self.config.handle_tracking:
             if not self.config.artifact_only:
                 _summarize_handle_tracking(self.handle_tracking_records)
+            _write_handle_tracking_artifacts(self.handle_tracking_records, dataset_file)
 
     def _should_print_joint_tracking(self, step: int) -> bool:
         if step < self.config.joint_tracking_steps:

@@ -148,6 +148,15 @@ parser.add_argument(
         "recording each episode."
     ),
 )
+parser.add_argument(
+    "--decimation",
+    type=int,
+    default=None,
+    help=(
+        "Override IsaacLab env decimation for trajectory replay. "
+        "Default: use the environment config value."
+    ),
+)
 
 add_record_debug_args(parser)
 add_example_environments_cli_args(parser)
@@ -267,6 +276,10 @@ def main():
     # ---- Build environment ----
     arena_builder = get_arena_builder_from_cli(args_cli)
     env_name, env_cfg = arena_builder.build_registered()
+    if args_cli.decimation is not None:
+        if args_cli.decimation < 1:
+            raise ValueError("--decimation must be >= 1.")
+        env_cfg.decimation = args_cli.decimation
 
     record_debugger = make_record_debugger(args_cli)
 

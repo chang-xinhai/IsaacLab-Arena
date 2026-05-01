@@ -68,6 +68,12 @@ parser.add_argument(
     default=1,
     help="Interpolation factor for trajectories.",
 )
+parser.add_argument(
+    "--decimation",
+    type=int,
+    default=None,
+    help="Override IsaacLab env decimation for debug replay.",
+)
 
 add_example_environments_cli_args(parser)
 args_cli = parser.parse_args()
@@ -153,6 +159,10 @@ def main():
     # ---- Build environment ----
     arena_builder = get_arena_builder_from_cli(args_cli)
     env_name, env_cfg = arena_builder.build_registered()
+    if args_cli.decimation is not None:
+        if args_cli.decimation < 1:
+            raise ValueError("--decimation must be >= 1.")
+        env_cfg.decimation = args_cli.decimation
 
     object_name = getattr(args_cli, "object_name", None)
     if args_cli.set_state:
