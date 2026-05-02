@@ -17,7 +17,7 @@ and replays joint positions in the simulator. Supports two modes:
 
 Additional options:
 
-- **Interpolation** (``--interpolated X``): Linearly interpolate between trajectory
+- **Interpolation** (``--interpolated X``): Interpolate between trajectory
   keyframes by factor X, producing smoother motion (X-times more steps).
 - **Mobile-base-relative** (``--mobile_base_relative``): Return base joints as
   relative deltas (Δx, Δy, Δθ) instead of absolute positions. Arm and gripper joints
@@ -54,6 +54,7 @@ from gymnasium.spaces.dict import Dict as GymSpacesDict
 from pathlib import Path
 
 from isaaclab_arena.policy.policy_base import PolicyBase
+from isaaclab_arena.utils.action_interpolation import interpolate_trajectory, normalize_interpolation_type
 
 
 class ReplayAutomomaTrajectoryPolicy(PolicyBase):
@@ -75,6 +76,8 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         only_successful: If True (default), skip episodes where traj_success is False.
         interpolation_factor: Factor to interpolate between trajectory keyframes.
             1 = no interpolation (default). 4 = 3 intermediate frames between each pair.
+        interpolation_type: Interpolation curve. Supported: none, linear,
+            cubic, smoothstep, smootherstep, minjerk.
         mobile_base_relative: If True, return base joints (first ``base_dof`` dims) as
             relative deltas from the current state. Arm and gripper remain absolute.
         base_dof: Number of base degrees of freedom (default 3: x, y, θ).
@@ -88,6 +91,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         device: str = "cuda",
         only_successful: bool = True,
         interpolation_factor: int = 1,
+        interpolation_type: str = "linear",
         mobile_base_relative: bool = False,
         base_dof: int = 3,
     ):
@@ -95,6 +99,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         self.set_state = set_state
         self.device = device
         self.interpolation_factor = max(1, interpolation_factor)
+        self.interpolation_type = normalize_interpolation_type(interpolation_type)
         self.mobile_base_relative = mobile_base_relative
         self.base_dof = base_dof
 
@@ -143,7 +148,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         self._current_step = 0
 
         # Pre-compute interpolated trajectories if needed
-        if self.interpolation_factor > 1:
+        if self.interpolation_factor > 1 and self.interpolation_type != "none":
             self._traj_robot = self._interpolate_trajectory(self._traj_robot)
             self._traj_obj = self._interpolate_trajectory(self._traj_obj)
 
@@ -152,7 +157,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         print(
             f"[ReplayAutomomaTrajectoryPolicy] Loaded {self._n_episodes} episodes, "
             f"{self._n_raw_steps} raw steps → {self._n_steps} effective steps "
-            f"(interp={self.interpolation_factor}x), "
+            f"(interp={self.interpolation_factor}x, type={self.interpolation_type}), "
             f"{self._n_robot_joints} robot joints, {self._n_obj_joints} object joints. "
             f"Replaying episode {self._episode_index}. "
             f"Mode: {'set_state' if self.set_state else 'drive (physics)'}. "
@@ -160,7 +165,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         )
 
     def _interpolate_trajectory(self, traj: torch.Tensor) -> torch.Tensor:
-        """Linearly interpolate a trajectory by ``interpolation_factor``.
+        """Interpolate a trajectory by ``interpolation_factor``.
 
         Args:
             traj: Tensor of shape ``(N, T, J)`` — N episodes, T timesteps, J joints.
@@ -168,20 +173,7 @@ class ReplayAutomomaTrajectoryPolicy(PolicyBase):
         Returns:
             Interpolated tensor of shape ``(N, T * factor, J)``.
         """
-        N, T, J = traj.shape
-        factor = self.interpolation_factor
-        new_T = (T - 1) * factor + 1  # e.g. T=32, factor=4 → 125 steps
-        result = torch.zeros(N, new_T, J, dtype=traj.dtype, device=traj.device)
-
-        for i in range(T - 1):
-            for k in range(factor):
-                alpha = k / factor
-                idx = i * factor + k
-                result[:, idx, :] = (1.0 - alpha) * traj[:, i, :] + alpha * traj[:, i + 1, :]
-        # Last frame
-        result[:, -1, :] = traj[:, -1, :]
-
-        return result
+        return interpolate_trajectory(traj, self.interpolation_factor, self.interpolation_type)
 
     @staticmethod
     def _validate_data(data: dict) -> None:

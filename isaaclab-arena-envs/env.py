@@ -274,6 +274,8 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     traj_file = config.get("traj_file", None)
     traj_seed = config.get("traj_seed", 42)
     handle_distance_threshold = config.get("handle_distance_threshold", 0.1)
+    interpolation_factor = config.get("interpolated", config.get("interpolation_factor", 1))
+    interpolation_type = config.get("interpolation_type", "linear")
 
     # Wrap and return
     wrapped_env = IsaacLabEnvWrapper(
@@ -288,6 +290,8 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         traj_file=traj_file,
         traj_seed=traj_seed,
         handle_distance_threshold=handle_distance_threshold,
+        interpolation_factor=interpolation_factor,
+        interpolation_type=interpolation_type,
     )
     logging.info(f"Created: {environment} with {wrapped_env.num_envs} envs, render_mode={render_mode}")
 

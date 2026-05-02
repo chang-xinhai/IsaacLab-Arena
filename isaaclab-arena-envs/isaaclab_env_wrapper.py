@@ -11,6 +11,8 @@ import gymnasium as gym
 import numpy as np
 import torch
 
+from isaaclab_arena.utils.action_interpolation import OnlineActionInterpolator
+
 from .errors import IsaacLabArenaError
 
 
@@ -53,6 +55,8 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         traj_file: str | None = None,
         traj_seed: int = 42,
         handle_distance_threshold: float = 0.1,
+        interpolation_factor: int = 1,
+        interpolation_type: str = "linear",
     ):
         self._env = env
         self._num_envs = env.num_envs
@@ -66,6 +70,16 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         self._base_dof = base_dof
         self._state_key = state_key
         self._handle_distance_threshold = handle_distance_threshold
+        self._action_interpolator = OnlineActionInterpolator(
+            interpolation_factor=interpolation_factor,
+            interpolation_type=interpolation_type,
+        )
+        if self._action_interpolator.enabled:
+            logging.info(
+                "[IsaacLabEnvWrapper] Action interpolation enabled: "
+                f"{self._action_interpolator.interpolation_factor}x, "
+                f"type={self._action_interpolator.interpolation_type}"
+            )
 
         # Trajectory-based initial state for evaluation
         self._traj_data = None
@@ -263,6 +277,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
             obs = self._set_initial_state_from_traj(obs)
 
         self._episode_summaries = [self._make_empty_episode_summary() for _ in range(self._num_envs)]
+        self._action_interpolator.reset()
 
         if "final_info" not in info:
             zeros = np.zeros(self._num_envs, dtype=bool)
@@ -368,8 +383,15 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         if self._mobile_base_relative and self._base_dof > 0:
             actions = self._integrate_base_deltas(actions)
 
-        obs, reward, terminated, truncated, info = self._env.step(actions)
-        self._update_episode_summaries()
+        obs = reward = terminated = truncated = info = None
+        for sim_action in self._action_interpolator.expand(actions):
+            obs, reward, terminated, truncated, info = self._env.step(sim_action)
+            self._update_episode_summaries()
+            if torch.any(terminated | truncated):
+                break
+
+        if obs is None:
+            raise RuntimeError("No simulator action was produced for env.step().")
 
         # Convert to numpy for gym compatibility
         reward = reward.cpu().numpy().astype(np.float32)

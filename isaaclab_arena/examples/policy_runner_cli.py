@@ -136,6 +136,13 @@ def add_replay_automoma_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     automoma_group.add_argument(
+        "--interpolation_type",
+        type=str,
+        default="linear",
+        choices=("none", "linear", "cubic", "smoothstep", "smootherstep", "minjerk"),
+        help="Interpolation curve to use with --interpolated.",
+    )
+    automoma_group.add_argument(
         "--mobile_base_relative",
         action="store_true",
         default=False,
@@ -218,6 +225,7 @@ def create_policy(args: argparse.Namespace) -> tuple[PolicyBase, int]:
             device=args.device,
             only_successful=args.only_successful,
             interpolation_factor=getattr(args, "interpolated", 1),
+            interpolation_type=getattr(args, "interpolation_type", "linear"),
             mobile_base_relative=getattr(args, "mobile_base_relative", False),
         )
         # Total steps = steps_per_episode * num_episodes

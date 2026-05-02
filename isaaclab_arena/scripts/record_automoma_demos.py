@@ -23,9 +23,9 @@ Two replay modes are supported:
 
 Additional options:
 
-- ``--interpolated X``: Linearly interpolate between trajectory keyframes by factor
-  X for smoother motion.  E.g. ``--interpolated 4`` inserts 3 frames between each
-  pair of original keyframes.
+- ``--interpolated X`` / ``--interpolation_type TYPE``: Interpolate between
+  trajectory keyframes by factor X for smoother motion.  E.g. ``--interpolated 4``
+  inserts 3 frames between each pair of original keyframes.
 
 - ``--mobile_base_relative``: Store base actions as relative deltas (Δx, Δy, Δθ)
   instead of absolute positions. Arm / gripper remain absolute.
@@ -117,6 +117,13 @@ parser.add_argument(
         "Interpolation factor for smoothing trajectories.  1 = no interpolation. "
         "4 = insert 3 intermediate frames between each pair of keyframes."
     ),
+)
+parser.add_argument(
+    "--interpolation_type",
+    type=str,
+    default="linear",
+    choices=("none", "linear", "cubic", "smoothstep", "smootherstep", "minjerk"),
+    help="Interpolation curve to use with --interpolated.",
 )
 parser.add_argument(
     "--mobile_base_relative",
@@ -342,6 +349,7 @@ def main():
         device=args_cli.device if hasattr(args_cli, "device") else "cpu",
         only_successful=args_cli.only_successful,
         interpolation_factor=args_cli.interpolated,
+        interpolation_type=args_cli.interpolation_type,
     )
 
     record_debugger.setup(env, env_cfg, policy)
@@ -352,7 +360,10 @@ def main():
     print(f"Recording {num_episodes} episodes to {args_cli.dataset_file}")
     print(f"Mode: {'set_state (robot+object state action)' if args_cli.set_state else 'drive (physics)'}")
     print(f"Collision mode: {'disabled' if collisionless_replay else 'enabled'}")
-    print(f"Steps per episode: {policy.n_steps} (raw={policy.n_raw_steps}, interp={args_cli.interpolated}x)")
+    print(
+        f"Steps per episode: {policy.n_steps} "
+        f"(raw={policy.n_raw_steps}, interp={args_cli.interpolated}x, type={args_cli.interpolation_type})"
+    )
     print(f"Mobile base relative: {args_cli.mobile_base_relative}")
     print(f"Initial state-write Isaac Sim steps: {init_steps}")
     print(f"{'=' * 60}\n")

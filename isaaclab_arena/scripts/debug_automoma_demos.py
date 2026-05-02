@@ -69,6 +69,13 @@ parser.add_argument(
     help="Interpolation factor for trajectories.",
 )
 parser.add_argument(
+    "--interpolation_type",
+    type=str,
+    default="linear",
+    choices=("none", "linear", "cubic", "smoothstep", "smootherstep", "minjerk"),
+    help="Interpolation curve to use with --interpolated.",
+)
+parser.add_argument(
     "--decimation",
     type=int,
     default=None,
@@ -253,6 +260,7 @@ def main():
             device=env.device,
             only_successful=True,
             interpolation_factor=args_cli.interpolated,
+            interpolation_type=args_cli.interpolation_type,
         )
         
         num_episodes = min(args_cli.num_episodes, policy.n_episodes - args_cli.start_episode)
