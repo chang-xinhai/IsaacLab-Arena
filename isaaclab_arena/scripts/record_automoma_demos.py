@@ -164,6 +164,22 @@ parser.add_argument(
         "Default: use the environment config value."
     ),
 )
+parser.add_argument(
+    "--validate_record_success",
+    action="store_true",
+    default=False,
+    help=(
+        "After each replayed trajectory, evaluate the final state with the same "
+        "door-open-and-final-engaged rule used by eval. Failed episodes are "
+        "removed from the output HDF5."
+    ),
+)
+parser.add_argument(
+    "--record_eval_handle_distance_threshold",
+    type=float,
+    default=0.1,
+    help="Final handle-distance threshold for record success validation. Matches eval default: 0.1.",
+)
 
 add_record_debug_args(parser)
 add_example_environments_cli_args(parser)
@@ -176,6 +192,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import os
+import math
 
 import h5py
 import torch
@@ -189,6 +206,10 @@ from isaaclab.utils import configclass
 from isaaclab_arena.embodiments.summit_franka.summit_franka import (
     SummitFrankaAutomomaSetStateActionsCfg,
     SummitFrankaJointSpaceActionsCfg,
+)
+from isaaclab_arena.metrics.handle_proximity_rate import (
+    compute_open_while_engaged,
+    get_cached_handle_proximity_diagnostics,
 )
 from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
 from isaaclab_arena.utils.sim_utils import (
@@ -218,6 +239,161 @@ class ArenaEnvRecorderManagerCfg(ActionStateRecorderManagerCfg):
     """Recorder configuration for actions, states, and camera observations."""
 
     record_pre_step_flat_camera_observations = PreStepFlatCameraObservationsRecorderCfg()
+
+
+def _sorted_demo_keys(data_group) -> list[str]:
+    def demo_index(key: str) -> int:
+        try:
+            return int(key.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            return 10**12
+
+    return sorted(data_group.keys(), key=demo_index)
+
+
+def _resolve_openable_object(env_cfg):
+    arena_env = getattr(env_cfg, "isaaclab_arena_env", None)
+    task = getattr(arena_env, "task", None)
+    return getattr(task, "openable_object", None)
+
+
+def _compact_demo_keys(data_group) -> None:
+    for new_index, old_key in enumerate(_sorted_demo_keys(data_group)):
+        new_key = f"demo_{new_index}"
+        if old_key != new_key:
+            data_group.move(old_key, new_key)
+
+
+def _scalar_from_tensor(value, env_index: int = 0):
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return None
+        value = value.detach().cpu().flatten()[env_index].item()
+    return value
+
+
+def _bool_from_tensor(value, env_index: int = 0) -> bool | None:
+    value = _scalar_from_tensor(value, env_index=env_index)
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _float_from_tensor(value, env_index: int = 0) -> float | None:
+    value = _scalar_from_tensor(value, env_index=env_index)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _safe_hdf5_attr_value(value):
+    if value is None:
+        return float("nan")
+    if isinstance(value, float) and not math.isfinite(value):
+        return value
+    return value
+
+
+def _evaluate_record_success(env, openable_object, args_cli) -> dict[str, bool | float | None]:
+    compute_open_while_engaged(
+        env=env,
+        openable_object=openable_object,
+        proximity_threshold=args_cli.proximity_threshold,
+        proximity_window_steps=args_cli.proximity_window_steps,
+        proximity_required_steps=args_cli.proximity_required_steps,
+        use_fingertips=not args_cli.disable_fingertip_proximity,
+        openness_threshold=args_cli.openness_threshold,
+        debug_visualize_handle=args_cli.debug_visualize_handle,
+        debug_marker_scale=args_cli.debug_marker_scale,
+    )
+    diagnostics = get_cached_handle_proximity_diagnostics(env, openable_object)
+    if diagnostics is None:
+        raise RuntimeError("Record success validation could not read handle proximity diagnostics.")
+
+    door_open = _bool_from_tensor(diagnostics.get("door_open"))
+    openness = _float_from_tensor(diagnostics.get("openness"))
+    handle_distance = _float_from_tensor(diagnostics.get("handle_distance"))
+    final_engaged = handle_distance is not None and handle_distance <= args_cli.record_eval_handle_distance_threshold
+    success = bool(door_open and final_engaged)
+    return {
+        "success": success,
+        "final_door_open": bool(door_open) if door_open is not None else False,
+        "final_engaged": bool(final_engaged),
+        "final_door_openness": openness,
+        "final_openness": openness,
+        "final_handle_distance": handle_distance,
+    }
+
+
+def _postprocess_record_success(
+    dataset_file: str,
+    episode_results: list[dict[str, bool | float | int | None]],
+    *,
+    validate_record_success: bool,
+    handle_distance_threshold: float,
+) -> tuple[int, int]:
+    """Write record success metadata and optionally drop failed demos."""
+    if not os.path.exists(dataset_file):
+        print(f"[RecordSuccess] Warning: dataset file does not exist: {dataset_file}")
+        return 0, 0
+
+    with h5py.File(dataset_file, "r+") as f:
+        if "data" not in f:
+            print("[RecordSuccess] Warning: no 'data' group in HDF5, skipping.")
+            return 0, 0
+
+        data = f["data"]
+        demo_keys = _sorted_demo_keys(data)
+        if len(demo_keys) != len(episode_results):
+            print(
+                "[RecordSuccess] Warning: HDF5 demo count "
+                f"({len(demo_keys)}) does not match replayed episode count ({len(episode_results)}). "
+                "Updating the overlapping prefix only."
+            )
+
+        successful = 0
+        failed_keys = []
+        for demo_key, result in zip(demo_keys, episode_results):
+            demo = data[demo_key]
+            success = bool(result["success"])
+            if success:
+                successful += 1
+            elif validate_record_success:
+                failed_keys.append(demo_key)
+
+            demo.attrs["success"] = success
+            demo.attrs["record_success_checked"] = bool(validate_record_success)
+            demo.attrs["traj_index"] = int(result["traj_index"])
+            if validate_record_success:
+                demo.attrs["final_door_open"] = bool(result["final_door_open"])
+                demo.attrs["final_engaged"] = bool(result["final_engaged"])
+                demo.attrs["final_door_openness"] = _safe_hdf5_attr_value(result["final_door_openness"])
+                demo.attrs["final_openness"] = _safe_hdf5_attr_value(result["final_openness"])
+                demo.attrs["final_handle_distance"] = _safe_hdf5_attr_value(result["final_handle_distance"])
+
+        for demo_key in failed_keys:
+            del data[demo_key]
+
+        if failed_keys:
+            _compact_demo_keys(data)
+
+        remaining_keys = _sorted_demo_keys(data)
+        total_samples = sum(int(data[key].attrs.get("num_samples", 0)) for key in remaining_keys)
+        data.attrs["total"] = total_samples
+        data.attrs["record_success_checked"] = bool(validate_record_success)
+        data.attrs["record_success_attempted_count"] = len(episode_results)
+        data.attrs["record_success_success_count"] = successful
+        data.attrs["record_success_saved_count"] = len(remaining_keys)
+        data.attrs["record_success_removed_count"] = len(failed_keys)
+        if validate_record_success:
+            data.attrs["record_success_rule"] = (
+                "final_door_open && final_handle_distance <= "
+                f"{handle_distance_threshold}"
+            )
+
+        return successful, len(remaining_keys)
 
 
 def _postprocess_mobile_base_relative(dataset_file: str, base_dof: int = 3) -> None:
@@ -324,6 +500,12 @@ def main():
     import gymnasium as gym
 
     env = gym.make(env_name, cfg=env_cfg).unwrapped
+    openable_object = _resolve_openable_object(env_cfg)
+    if args_cli.validate_record_success and openable_object is None:
+        raise RuntimeError(
+            "--validate_record_success requires an OpenDoor task with an openable_object, "
+            "but none was found in the environment config."
+        )
 
     # ---- Post-creation scene fixes ----
     # 1) Deactivate duplicate object prims baked into the background scene USD
@@ -366,9 +548,19 @@ def main():
     )
     print(f"Mobile base relative: {args_cli.mobile_base_relative}")
     print(f"Initial state-write Isaac Sim steps: {init_steps}")
+    if args_cli.validate_record_success:
+        print(
+            "Record success validation: enabled "
+            f"(openness_threshold={args_cli.openness_threshold}, "
+            f"handle_distance_threshold={args_cli.record_eval_handle_distance_threshold}, "
+            f"use_fingertips={not args_cli.disable_fingertip_proximity})"
+        )
+    else:
+        print("Record success validation: disabled (saving all replayed episodes)")
     print(f"{'=' * 60}\n")
 
     recorded_count = 0
+    episode_results = []
 
     # ---- Initial reset ----
     obs, _ = env.reset()
@@ -399,9 +591,33 @@ def main():
 
         record_debugger.end_episode()
 
-        # Mark episode as successful
+        if args_cli.validate_record_success:
+            success_result = _evaluate_record_success(env, openable_object, args_cli)
+            print(
+                f"[RecordSuccess] traj={actual_ep} success={success_result['success']} "
+                f"door_open={success_result['final_door_open']} "
+                f"final_engaged={success_result['final_engaged']} "
+                f"openness={success_result['final_door_openness']} "
+                f"handle_distance={success_result['final_handle_distance']}",
+                flush=True,
+            )
+        else:
+            success_result = {
+                "success": True,
+                "final_door_open": None,
+                "final_engaged": None,
+                "final_door_openness": None,
+                "final_openness": None,
+                "final_handle_distance": None,
+            }
+        success_result["traj_index"] = actual_ep
+        episode_results.append(success_result)
+
+        # The recorder's pre-reset hook recomputes success from termination terms,
+        # which are disabled above to avoid mid-trajectory resets. We still set the
+        # value here for in-memory consistency, then fix HDF5 attrs after export.
         env.recorder_manager.set_success_to_episodes(
-            [0], torch.tensor([[True]], dtype=torch.bool, device=env.device)
+            [0], torch.tensor([[bool(success_result["success"])]], dtype=torch.bool, device=env.device)
         )
         recorded_count += 1
 
@@ -423,6 +639,21 @@ def main():
     record_debugger.finish(args_cli.dataset_file)
 
     env.close()
+
+    successful_count, saved_count = _postprocess_record_success(
+        args_cli.dataset_file,
+        episode_results,
+        validate_record_success=args_cli.validate_record_success,
+        handle_distance_threshold=args_cli.record_eval_handle_distance_threshold,
+    )
+    if args_cli.validate_record_success:
+        attempted_count = len(episode_results)
+        success_rate = successful_count / attempted_count if attempted_count else 0.0
+        print(
+            f"[RecordSuccess] attempted={attempted_count} successful={successful_count} "
+            f"saved={saved_count} success_rate={success_rate:.2%}",
+            flush=True,
+        )
 
     # ---- Post-processing: mobile base relative ----
     if args_cli.mobile_base_relative and os.path.exists(args_cli.dataset_file):

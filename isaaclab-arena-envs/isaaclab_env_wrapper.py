@@ -11,8 +11,6 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from isaaclab_arena.utils.action_interpolation import OnlineActionInterpolator
-
 from .errors import IsaacLabArenaError
 
 
@@ -70,15 +68,12 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         self._base_dof = base_dof
         self._state_key = state_key
         self._handle_distance_threshold = handle_distance_threshold
-        self._action_interpolator = OnlineActionInterpolator(
-            interpolation_factor=interpolation_factor,
-            interpolation_type=interpolation_type,
-        )
-        if self._action_interpolator.enabled:
+        self.interpolation_factor = max(1, int(interpolation_factor))
+        self.interpolation_type = str(interpolation_type)
+        if self.interpolation_factor > 1 and self.interpolation_type != "none":
             logging.info(
-                "[IsaacLabEnvWrapper] Action interpolation enabled: "
-                f"{self._action_interpolator.interpolation_factor}x, "
-                f"type={self._action_interpolator.interpolation_type}"
+                "[IsaacLabEnvWrapper] Action interpolation configured for external executor: "
+                f"{self.interpolation_factor}x, type={self.interpolation_type}"
             )
 
         # Trajectory-based initial state for evaluation
@@ -277,7 +272,6 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
             obs = self._set_initial_state_from_traj(obs)
 
         self._episode_summaries = [self._make_empty_episode_summary() for _ in range(self._num_envs)]
-        self._action_interpolator.reset()
 
         if "final_info" not in info:
             zeros = np.zeros(self._num_envs, dtype=bool)
@@ -375,6 +369,15 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
     def step(
         self, actions: np.ndarray | torch.Tensor
     ) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, dict]:
+        prepared_actions = self.prepare_action(actions)
+        return self.step_prepared_action(prepared_actions)
+
+    def prepare_action(self, actions: np.ndarray | torch.Tensor) -> torch.Tensor:
+        """Convert a caller action to the absolute action consumed by IsaacLab.
+
+        This keeps ``step`` as a single environment transition while still
+        allowing external executors to interpolate already-processed actions.
+        """
         self._check_closed()
         if isinstance(actions, np.ndarray):
             actions = torch.from_numpy(actions).to(self._env.device)
@@ -382,16 +385,18 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         # Mobile-base-relative: integrate Δbase with current base state
         if self._mobile_base_relative and self._base_dof > 0:
             actions = self._integrate_base_deltas(actions)
+        return actions
 
-        obs = reward = terminated = truncated = info = None
-        for sim_action in self._action_interpolator.expand(actions):
-            obs, reward, terminated, truncated, info = self._env.step(sim_action)
-            self._update_episode_summaries()
-            if torch.any(terminated | truncated):
-                break
+    def step_prepared_action(
+        self, actions: np.ndarray | torch.Tensor
+    ) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, dict]:
+        """Execute one already-processed action without additional preprocessing."""
+        self._check_closed()
+        if isinstance(actions, np.ndarray):
+            actions = torch.from_numpy(actions).to(self._env.device)
 
-        if obs is None:
-            raise RuntimeError("No simulator action was produced for env.step().")
+        obs, reward, terminated, truncated, info = self._env.step(actions)
+        self._update_episode_summaries()
 
         # Convert to numpy for gym compatibility
         reward = reward.cpu().numpy().astype(np.float32)
@@ -402,6 +407,13 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         info["final_info"] = self._finalize_episode_summaries(terminated, truncated, is_success)
 
         return obs, reward, terminated, truncated, info
+
+    def make_action_executor(self, **kwargs):
+        from isaaclab_arena.utils.action_execution import InterpolatedActionExecutor
+
+        kwargs.setdefault("interpolation_factor", self.interpolation_factor)
+        kwargs.setdefault("interpolation_type", self.interpolation_type)
+        return InterpolatedActionExecutor(self, **kwargs)
 
     def _get_success(self, terminated: np.ndarray, truncated: np.ndarray) -> np.ndarray:
         done = terminated | truncated
