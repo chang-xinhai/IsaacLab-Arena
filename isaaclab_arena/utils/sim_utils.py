@@ -210,6 +210,123 @@ def sync_cameras_after_reset(env: "gym.Env") -> dict:
     return obs
 
 
+def _format_material_value(value: float | None) -> str:
+    return "unchanged" if value is None else f"{value:g}"
+
+
+def set_asset_material_friction(
+    asset,
+    static_friction: float | None = None,
+    dynamic_friction: float | None = None,
+    label: str | None = None,
+) -> bool:
+    """Set contact material friction on every shape in an IsaacLab asset.
+
+    This updates the PhysX material property buffer directly, matching the
+    approach used by IsaacLab's material randomization events.  It applies to
+    all rigid shapes in the asset.
+
+    Args:
+        asset: IsaacLab ``RigidObject`` or ``Articulation`` scene entity.
+        static_friction: Static friction coefficient. ``None`` leaves it unchanged.
+        dynamic_friction: Dynamic friction coefficient. ``None`` leaves it unchanged.
+        label: Optional label used in logs.
+
+    Returns:
+        ``True`` if material properties were updated, otherwise ``False``.
+    """
+    if static_friction is None and dynamic_friction is None:
+        return False
+    root_physx_view = getattr(asset, "root_physx_view", None)
+    if root_physx_view is None:
+        print(f"[set_material_friction] Warning: asset {label or asset!r} has no root_physx_view.")
+        return False
+
+    materials = root_physx_view.get_material_properties()
+    if static_friction is not None:
+        materials[..., 0] = float(static_friction)
+    if dynamic_friction is not None:
+        materials[..., 1] = float(dynamic_friction)
+
+    # IsaacLab expects env ids for material updates on the CPU.
+    import torch
+
+    num_envs = int(materials.shape[0])
+    env_ids = torch.arange(num_envs, device="cpu")
+    root_physx_view.set_material_properties(materials, env_ids)
+
+    name = label or getattr(asset, "name", asset.__class__.__name__)
+    print(
+        "[set_material_friction] "
+        f"{name}: static={_format_material_value(static_friction)} "
+        f"dynamic={_format_material_value(dynamic_friction)} "
+        f"envs={num_envs} shapes={int(materials.shape[1]) if materials.ndim >= 2 else 'unknown'}"
+    )
+    return True
+
+
+def set_robot_object_material_friction(
+    env: "gym.Env",
+    object_name: str | None,
+    static_friction: float | None = None,
+    dynamic_friction: float | None = None,
+) -> int:
+    """Set material friction on the whole robot and target object.
+
+    This is intentionally broad: every rigid shape on ``scene["robot"]`` and
+    ``scene[object_name]`` receives the same friction values.
+
+    Args:
+        env: The unwrapped IsaacLab environment.
+        object_name: Target object scene key, e.g. ``"microwave_7221"``.
+        static_friction: Static friction coefficient. ``None`` leaves it unchanged.
+        dynamic_friction: Dynamic friction coefficient. ``None`` leaves it unchanged.
+
+    Returns:
+        Number of scene assets updated.
+    """
+    if static_friction is None and dynamic_friction is None:
+        return 0
+    if static_friction is None:
+        static_friction = dynamic_friction
+    if dynamic_friction is None:
+        dynamic_friction = static_friction
+    if not hasattr(env, "scene"):
+        print("[set_robot_object_material_friction] Warning: env has no scene.")
+        return 0
+
+    updated = 0
+    scene_keys = set(env.scene.keys())
+    if "robot" in scene_keys:
+        updated += int(
+            set_asset_material_friction(
+                env.scene["robot"],
+                static_friction=static_friction,
+                dynamic_friction=dynamic_friction,
+                label="robot",
+            )
+        )
+    else:
+        print("[set_robot_object_material_friction] Warning: scene has no 'robot' asset.")
+
+    if object_name and object_name in scene_keys:
+        updated += int(
+            set_asset_material_friction(
+                env.scene[object_name],
+                static_friction=static_friction,
+                dynamic_friction=dynamic_friction,
+                label=object_name,
+            )
+        )
+    elif object_name:
+        print(f"[set_robot_object_material_friction] Warning: scene has no target object '{object_name}'.")
+    else:
+        print("[set_robot_object_material_friction] Warning: object_name was not provided.")
+
+    print(f"[set_robot_object_material_friction] Updated {updated} assets.")
+    return updated
+
+
 def disable_collision_for_prim_and_descendants(prim_path: str) -> int:
     """Disable collision on a prim and all its descendants.
 

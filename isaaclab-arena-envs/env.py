@@ -138,6 +138,14 @@ def resolve_environment_alias(environment: str) -> str:
     )
     return module
 
+def _optional_float(config: dict, key: str, env_name: str, default: float | None = None) -> float | None:
+    value = config.get(key)
+    if value is None or value == "":
+        value = os.environ.get(env_name)
+    if value is None or value == "":
+        return default
+    return float(value)
+
 def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.vector.VectorEnv]]:
     """Create IsaacLab Arena environment from configuration.
 
@@ -229,7 +237,30 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
 
         set_lighting_mode(int(lighting_mode))
 
-        # 3) Optionally disable ALL collisions in the simulation
+        # 3) Optionally increase contact friction on the whole robot and target object
+        static_friction = _optional_float(
+            config,
+            "robot_object_static_friction",
+            "AUTOMOMA_ROBOT_OBJECT_STATIC_FRICTION",
+            default=1.0,
+        )
+        dynamic_friction = _optional_float(
+            config,
+            "robot_object_dynamic_friction",
+            "AUTOMOMA_ROBOT_OBJECT_DYNAMIC_FRICTION",
+            default=1.0,
+        )
+        if static_friction is not None or dynamic_friction is not None:
+            from isaaclab_arena.utils.sim_utils import set_robot_object_material_friction
+
+            set_robot_object_material_friction(
+                raw_env,
+                object_name=object_name,
+                static_friction=static_friction,
+                dynamic_friction=dynamic_friction,
+            )
+
+        # 4) Optionally disable ALL collisions in the simulation
         if config.get("disable_collision", False):
             from isaaclab_arena.utils.sim_utils import disable_all_collisions
 

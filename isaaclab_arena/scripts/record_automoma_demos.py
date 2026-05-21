@@ -180,6 +180,24 @@ parser.add_argument(
     default=0.1,
     help="Final handle-distance threshold for record success validation. Matches eval default: 0.1.",
 )
+parser.add_argument(
+    "--robot_object_static_friction",
+    type=float,
+    default=None,
+    help=(
+        "Override static contact friction on all robot and target-object rigid shapes. "
+        "If omitted, AUTOMOMA_ROBOT_OBJECT_STATIC_FRICTION is used when set; otherwise defaults to 1.0."
+    ),
+)
+parser.add_argument(
+    "--robot_object_dynamic_friction",
+    type=float,
+    default=None,
+    help=(
+        "Override dynamic contact friction on all robot and target-object rigid shapes. "
+        "If omitted, AUTOMOMA_ROBOT_OBJECT_DYNAMIC_FRICTION is used when set; otherwise defaults to 1.0."
+    ),
+)
 
 add_record_debug_args(parser)
 add_example_environments_cli_args(parser)
@@ -213,6 +231,7 @@ from isaaclab_arena.metrics.handle_proximity_rate import (
 )
 from isaaclab_arena.policy.replay_automoma_trajectory_policy import ReplayAutomomaTrajectoryPolicy
 from isaaclab_arena.utils.sim_utils import (
+    set_robot_object_material_friction,
     deactivate_prims_by_name,
     disable_all_collisions,
     set_lighting_mode,
@@ -294,6 +313,15 @@ def _safe_hdf5_attr_value(value):
     if isinstance(value, float) and not math.isfinite(value):
         return value
     return value
+
+
+def _resolve_optional_float(cli_value: float | None, env_name: str) -> float | None:
+    if cli_value is not None:
+        return float(cli_value)
+    env_value = os.environ.get(env_name)
+    if env_value in (None, ""):
+        return None
+    return float(env_value)
 
 
 def _evaluate_record_success(env, openable_object, args_cli) -> dict[str, bool | float | None]:
@@ -519,7 +547,27 @@ def main():
     # 2) Set lighting to grey mode (mode 2)
     set_lighting_mode(2)
 
-    # 3) Optionally disable ALL collisions in the simulation
+    # 3) Optionally increase contact friction on the whole robot and target object
+    static_friction = _resolve_optional_float(
+        args_cli.robot_object_static_friction,
+        "AUTOMOMA_ROBOT_OBJECT_STATIC_FRICTION",
+    )
+    dynamic_friction = _resolve_optional_float(
+        args_cli.robot_object_dynamic_friction,
+        "AUTOMOMA_ROBOT_OBJECT_DYNAMIC_FRICTION",
+    )
+    if static_friction is None and dynamic_friction is None:
+        static_friction = 1.0
+        dynamic_friction = 1.0
+    if static_friction is not None or dynamic_friction is not None:
+        set_robot_object_material_friction(
+            env,
+            object_name=object_name,
+            static_friction=static_friction,
+            dynamic_friction=dynamic_friction,
+        )
+
+    # 4) Optionally disable ALL collisions in the simulation
     if collisionless_replay:
         disable_all_collisions()
 
