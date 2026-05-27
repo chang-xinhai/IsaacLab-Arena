@@ -56,7 +56,9 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         parts = object_name.split("_")
         asset_id = parts[-1]
         asset_type = "_".join(parts[:-1])  # e.g. "microwave", "dishwasher", "oven"
-        asset_type_capitalized = asset_type.capitalize()
+        asset_type_capitalized = {
+            "trashcan": "TrashCan",
+        }.get(asset_type.lower(), asset_type.capitalize())
 
         # ---- Load scene background ----
         background = get_automoma_scene(scene_name)

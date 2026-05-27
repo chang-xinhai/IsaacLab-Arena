@@ -79,8 +79,37 @@ parser.add_argument(
 parser.add_argument(
     "--dataset_file",
     type=str,
-    required=True,
+    default="/tmp/automoma_metrics_no_record.hdf5",
     help="Output HDF5 file path for recorded demonstrations.",
+)
+parser.add_argument(
+    "--no_record",
+    "--no-record",
+    action="store_true",
+    default=False,
+    help="Replay trajectories without writing HDF5 demonstrations.",
+)
+parser.add_argument(
+    "--metrics",
+    nargs="?",
+    const="metrics.csv",
+    default=None,
+    help=(
+        "Write per-episode replay success metrics to this CSV path. If passed "
+        "without a value, writes metrics.csv in the current directory."
+    ),
+)
+parser.add_argument(
+    "--episode_indices",
+    type=str,
+    default=None,
+    help="Comma-separated trajectory indices to replay instead of a contiguous range.",
+)
+parser.add_argument(
+    "--episode_indices_file",
+    type=str,
+    default=None,
+    help="Text file containing one trajectory index per line, or comma-separated indices.",
 )
 parser.add_argument(
     "--set_state",
@@ -175,6 +204,15 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--keep_failed_record_demos",
+    action="store_true",
+    default=False,
+    help=(
+        "When used with --validate_record_success, keep failed replay demos in "
+        "the output HDF5 and only annotate success metadata."
+    ),
+)
+parser.add_argument(
     "--record_eval_handle_distance_threshold",
     type=float,
     default=0.1,
@@ -209,6 +247,7 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import csv
 import os
 import math
 
@@ -218,6 +257,7 @@ import tqdm
 
 import isaaclab.envs.mdp as mdp_isaac_lab
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
+from isaaclab.envs.manager_based_env_cfg import DefaultEmptyRecorderManagerCfg
 from isaaclab.managers import DatasetExportMode, ObservationTermCfg as ObsTerm, RecorderTerm, RecorderTermCfg
 from isaaclab.utils import configclass
 
@@ -355,12 +395,69 @@ def _evaluate_record_success(env, openable_object, args_cli) -> dict[str, bool |
     }
 
 
+def _parse_episode_indices(args_cli) -> list[int] | None:
+    values: list[int] = []
+    raw_items: list[str] = []
+    if args_cli.episode_indices:
+        raw_items.append(args_cli.episode_indices)
+    if args_cli.episode_indices_file:
+        with open(args_cli.episode_indices_file, "r", encoding="utf-8") as f:
+            raw_items.append(f.read())
+    for raw in raw_items:
+        for item in raw.replace(",", "\n").splitlines():
+            item = item.strip()
+            if not item or item.startswith("#"):
+                continue
+            values.append(int(item))
+    if not values:
+        return None
+    for value in values:
+        if value < 0:
+            raise ValueError(f"Episode indices must be non-negative, got {value}")
+    return values
+
+
+def _metrics_csv_fields() -> list[str]:
+    return [
+        "object_name",
+        "scene_name",
+        "traj_file",
+        "traj_index",
+        "success",
+        "final_door_open",
+        "final_engaged",
+        "final_door_openness",
+        "final_openness",
+        "final_handle_distance",
+        "max_openness",
+        "max_openness_step",
+        "min_handle_distance",
+        "min_handle_distance_step",
+        "num_steps",
+    ]
+
+
+def _write_metrics_rows(path: str, rows: list[dict[str, object]]) -> None:
+    if not path or not rows:
+        return
+    output_dir = os.path.dirname(path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    file_exists = os.path.exists(path) and os.path.getsize(path) > 0
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_metrics_csv_fields(), extrasaction="ignore")
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
 def _postprocess_record_success(
     dataset_file: str,
     episode_results: list[dict[str, bool | float | int | None]],
     *,
     validate_record_success: bool,
     handle_distance_threshold: float,
+    keep_failed_record_demos: bool,
 ) -> tuple[int, int]:
     """Write record success metadata and optionally drop failed demos."""
     if not os.path.exists(dataset_file):
@@ -388,7 +485,7 @@ def _postprocess_record_success(
             success = bool(result["success"])
             if success:
                 successful += 1
-            elif validate_record_success:
+            elif validate_record_success and not keep_failed_record_demos:
                 failed_keys.append(demo_key)
 
             demo.attrs["success"] = success
@@ -420,6 +517,7 @@ def _postprocess_record_success(
                 "final_door_open && final_handle_distance <= "
                 f"{handle_distance_threshold}"
             )
+            data.attrs["record_success_keep_failed_demos"] = bool(keep_failed_record_demos)
 
         return successful, len(remaining_keys)
 
@@ -475,14 +573,24 @@ def main():
     if args_cli.init_steps < 1:
         raise ValueError("--init_steps must be >= 1.")
 
+    if args_cli.no_record and not args_cli.metrics:
+        raise ValueError("--no_record requires --metrics so replay results are persisted.")
+    if args_cli.metrics and not args_cli.validate_record_success:
+        args_cli.validate_record_success = True
+
     collisionless_replay = args_cli.set_state or args_cli.disable_collision
+    no_record = bool(args_cli.no_record)
 
     # ---- Setup output ----
-    output_dir = os.path.dirname(args_cli.dataset_file)
-    output_file_name = os.path.splitext(os.path.basename(args_cli.dataset_file))[0]
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"Created output directory: {output_dir}")
+    if no_record:
+        output_dir = ""
+        output_file_name = ""
+    else:
+        output_dir = os.path.dirname(args_cli.dataset_file)
+        output_file_name = os.path.splitext(os.path.basename(args_cli.dataset_file))[0]
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created output directory: {output_dir}")
 
     # ---- Build environment ----
     arena_builder = get_arena_builder_from_cli(args_cli)
@@ -509,13 +617,16 @@ def main():
     env_cfg.observations.policy.joint_vel = ObsTerm(func=mdp_isaac_lab.joint_vel)
 
     # Configure the recorder
-    if args_cli.enable_cameras:
+    if no_record:
+        env_cfg.recorders = DefaultEmptyRecorderManagerCfg()
+    elif args_cli.enable_cameras:
         env_cfg.recorders = ArenaEnvRecorderManagerCfg()
     else:
         env_cfg.recorders = ActionStateRecorderManagerCfg()
-    env_cfg.recorders.dataset_export_dir_path = output_dir
-    env_cfg.recorders.dataset_filename = output_file_name
-    env_cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_ALL
+    if not no_record:
+        env_cfg.recorders.dataset_export_dir_path = output_dir
+        env_cfg.recorders.dataset_filename = output_file_name
+        env_cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_ALL
     # Don't time-out — we control episode length via the trajectory
     env_cfg.terminations.time_out = None
     # Also disable the success termination — in drive mode with interpolation,
@@ -585,9 +696,29 @@ def main():
     record_debugger.setup(env, env_cfg, policy)
     init_steps = args_cli.init_steps
 
-    num_episodes = min(args_cli.num_episodes, policy.n_episodes - args_cli.start_episode)
+    explicit_episode_indices = _parse_episode_indices(args_cli)
+    if explicit_episode_indices is None:
+        episode_indices = list(
+            range(
+                args_cli.start_episode,
+                min(args_cli.start_episode + args_cli.num_episodes, policy.n_episodes),
+            )
+        )
+    else:
+        episode_indices = explicit_episode_indices
+        bad_indices = [idx for idx in episode_indices if idx >= policy.n_episodes]
+        if bad_indices:
+            raise ValueError(
+                f"Episode indices out of range for {args_cli.traj_file}: "
+                f"{bad_indices[:10]} (max {policy.n_episodes - 1})"
+            )
+    num_episodes = len(episode_indices)
     print(f"\n{'=' * 60}")
-    print(f"Recording {num_episodes} episodes to {args_cli.dataset_file}")
+    if no_record:
+        print(f"Metrics-only replay of {num_episodes} episodes; no HDF5 will be written.")
+        print(f"Metrics CSV: {args_cli.metrics}")
+    else:
+        print(f"Recording {num_episodes} episodes to {args_cli.dataset_file}")
     print(f"Mode: {'set_state (robot+object state action)' if args_cli.set_state else 'drive (physics)'}")
     print(f"Collision mode: {'disabled' if collisionless_replay else 'enabled'}")
     print(
@@ -609,33 +740,51 @@ def main():
 
     recorded_count = 0
     episode_results = []
+    metrics_rows = []
 
     # ---- Initial reset ----
     obs, _ = env.reset()
     if collisionless_replay:
         disable_all_collisions()
-    # Fix first-frame camera lag: force a render + recompute observations
-    obs = sync_cameras_after_reset(env)
+    # Fix first-frame camera lag only when cameras or HDF5 recording are in use.
+    if args_cli.enable_cameras and not no_record:
+        obs = sync_cameras_after_reset(env)
 
-    for ep_idx in range(num_episodes):
-        actual_ep = args_cli.start_episode + ep_idx
+    for ep_idx, actual_ep in enumerate(episode_indices):
         policy.episode_index = actual_ep
         policy.reset()
 
         # Align the first recorded observation with the trajectory start pose.
-        policy.set_initial_state(env, init_steps=init_steps, render=True)
-        obs = sync_cameras_after_reset(env)
+        policy.set_initial_state(env, init_steps=init_steps, render=bool(args_cli.enable_cameras and not no_record))
+        if args_cli.enable_cameras and not no_record:
+            obs = sync_cameras_after_reset(env)
 
         print(f"[Episode {ep_idx + 1}/{num_episodes}] (traj index {actual_ep})")
         record_debugger.begin_episode(ep_idx, actual_ep)
         record_debugger.after_initial_state(env, policy)
 
+        max_openness = None
+        max_openness_step = None
+        min_handle_distance = None
+        min_handle_distance_step = None
         for step in tqdm.tqdm(range(policy.n_steps), desc=f"  Episode {ep_idx + 1}", leave=False):
             with torch.no_grad():
                 action = policy.get_action(env, obs)
             debug_step_state = record_debugger.before_step(env, policy, action, step)
             obs, _, terminated, truncated, _ = env.step(action)
             record_debugger.after_step(env, debug_step_state, step)
+            if args_cli.metrics and openable_object is not None:
+                step_result = _evaluate_record_success(env, openable_object, args_cli)
+                openness = step_result.get("final_openness")
+                handle_distance = step_result.get("final_handle_distance")
+                if openness is not None and math.isfinite(float(openness)):
+                    if max_openness is None or float(openness) > max_openness:
+                        max_openness = float(openness)
+                        max_openness_step = step
+                if handle_distance is not None and math.isfinite(float(handle_distance)):
+                    if min_handle_distance is None or float(handle_distance) < min_handle_distance:
+                        min_handle_distance = float(handle_distance)
+                        min_handle_distance_step = step
 
         record_debugger.end_episode()
 
@@ -660,13 +809,35 @@ def main():
             }
         success_result["traj_index"] = actual_ep
         episode_results.append(success_result)
+        if args_cli.metrics:
+            metrics_rows.append({
+                "object_name": getattr(args_cli, "object_name", None),
+                "scene_name": getattr(args_cli, "scene_name", None),
+                "traj_file": args_cli.traj_file,
+                "traj_index": actual_ep,
+                "success": bool(success_result["success"]),
+                "final_door_open": success_result["final_door_open"],
+                "final_engaged": success_result["final_engaged"],
+                "final_door_openness": success_result["final_door_openness"],
+                "final_openness": success_result["final_openness"],
+                "final_handle_distance": success_result["final_handle_distance"],
+                "max_openness": max_openness,
+                "max_openness_step": max_openness_step,
+                "min_handle_distance": min_handle_distance,
+                "min_handle_distance_step": min_handle_distance_step,
+                "num_steps": policy.n_steps,
+            })
+            if len(metrics_rows) >= 10:
+                _write_metrics_rows(args_cli.metrics, metrics_rows)
+                metrics_rows.clear()
 
         # The recorder's pre-reset hook recomputes success from termination terms,
         # which are disabled above to avoid mid-trajectory resets. We still set the
         # value here for in-memory consistency, then fix HDF5 attrs after export.
-        env.recorder_manager.set_success_to_episodes(
-            [0], torch.tensor([[bool(success_result["success"])]], dtype=torch.bool, device=env.device)
-        )
+        if not no_record:
+            env.recorder_manager.set_success_to_episodes(
+                [0], torch.tensor([[bool(success_result["success"])]], dtype=torch.bool, device=env.device)
+            )
         recorded_count += 1
 
         # Reset for next episode (this exports the current one)
@@ -674,26 +845,39 @@ def main():
             obs, _ = env.reset()
             if collisionless_replay:
                 disable_all_collisions()
-            obs = sync_cameras_after_reset(env)
+            if args_cli.enable_cameras and not no_record:
+                obs = sync_cameras_after_reset(env)
         else:
             # Export the last episode
-            env.recorder_manager.record_pre_reset(
-                torch.tensor([0], device=env.device)
-            )
+            if not no_record:
+                env.recorder_manager.record_pre_reset(
+                    torch.tensor([0], device=env.device)
+                )
 
     print(f"\n{'=' * 60}")
-    print(f"Recording complete: {recorded_count} episodes saved to {args_cli.dataset_file}")
+    if args_cli.metrics:
+        _write_metrics_rows(args_cli.metrics, metrics_rows)
+        metrics_rows.clear()
+    if no_record:
+        print(f"Metrics-only replay complete: {recorded_count} episodes; no HDF5 written.")
+    else:
+        print(f"Recording complete: {recorded_count} episodes saved to {args_cli.dataset_file}")
     print(f"{'=' * 60}")
-    record_debugger.finish(args_cli.dataset_file)
+    record_debugger.finish(args_cli.metrics if no_record else args_cli.dataset_file)
 
     env.close()
 
-    successful_count, saved_count = _postprocess_record_success(
-        args_cli.dataset_file,
-        episode_results,
-        validate_record_success=args_cli.validate_record_success,
-        handle_distance_threshold=args_cli.record_eval_handle_distance_threshold,
-    )
+    if no_record:
+        successful_count = sum(1 for result in episode_results if bool(result["success"]))
+        saved_count = 0
+    else:
+        successful_count, saved_count = _postprocess_record_success(
+            args_cli.dataset_file,
+            episode_results,
+            validate_record_success=args_cli.validate_record_success,
+            handle_distance_threshold=args_cli.record_eval_handle_distance_threshold,
+            keep_failed_record_demos=args_cli.keep_failed_record_demos,
+        )
     if args_cli.validate_record_success:
         attempted_count = len(episode_results)
         success_rate = successful_count / attempted_count if attempted_count else 0.0
@@ -704,7 +888,7 @@ def main():
         )
 
     # ---- Post-processing: mobile base relative ----
-    if args_cli.mobile_base_relative and os.path.exists(args_cli.dataset_file):
+    if not no_record and args_cli.mobile_base_relative and os.path.exists(args_cli.dataset_file):
         _postprocess_mobile_base_relative(args_cli.dataset_file, base_dof=3)
 
 
