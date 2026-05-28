@@ -146,6 +146,10 @@ def _interpolate_trajectory_cubic(trajectory: torch.Tensor, interpolation_factor
             + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3).unsqueeze(0) * t2
             + (-p0 + 3.0 * p1 - 3.0 * p2 + p3).unsqueeze(0) * t3
         )
+        # Preserve deliberate hold segments; Catmull-Rom tangents can otherwise
+        # pull a flat p1->p2 interval toward the following waypoint.
+        same_endpoints = torch.isclose(p1, p2, rtol=1e-7, atol=1e-9).unsqueeze(0)
+        segment = torch.where(same_endpoints, p1.unsqueeze(0).expand_as(segment), segment)
         pieces.append(segment)
     result = torch.cat(pieces + [trajectory[:, -1, :].unsqueeze(0)], dim=0)
     return result.permute(1, 0, 2).contiguous()

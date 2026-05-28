@@ -263,6 +263,29 @@ def load_scene_metadata(scene_name: str) -> dict:
         return json.load(f)
 
 
+def _normalize_asset_type(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def resolve_asset_type_from_metadata(metadata: dict, asset_type: str, asset_id: str) -> str:
+    """Return the canonical metadata asset type for an object name component.
+
+    Object names arrive as lower-case CLI values such as ``trashcan_123`` while
+    scene metadata stores canonical category names such as ``TrashCan``. Resolve
+    the category from metadata instead of hard-coding category-specific aliases
+    in environment scripts.
+    """
+
+    normalized_query = _normalize_asset_type(asset_type)
+    for obj_info in metadata.get("static_objects", {}).values():
+        if str(obj_info.get("asset_id")) != str(asset_id):
+            continue
+        metadata_asset_type = str(obj_info.get("asset_type", ""))
+        if _normalize_asset_type(metadata_asset_type) == normalized_query:
+            return metadata_asset_type
+    return asset_type.capitalize()
+
+
 def get_object_pose_from_metadata(
     metadata: dict,
     asset_type: str,

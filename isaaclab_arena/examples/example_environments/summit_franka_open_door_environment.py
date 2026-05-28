@@ -40,6 +40,7 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
             get_automoma_object,
             get_object_pose_from_metadata,
             load_scene_metadata,
+            resolve_asset_type_from_metadata,
         )
         from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
         from isaaclab_arena.scene.scene import Scene
@@ -56,15 +57,13 @@ class SummitFrankaOpenDoorEnvironment(ExampleEnvironmentBase):
         parts = object_name.split("_")
         asset_id = parts[-1]
         asset_type = "_".join(parts[:-1])  # e.g. "microwave", "dishwasher", "oven"
-        asset_type_capitalized = {
-            "trashcan": "TrashCan",
-        }.get(asset_type.lower(), asset_type.capitalize())
 
         # ---- Load scene background ----
         background = get_automoma_scene(scene_name)
 
         # ---- Read object pose from scene metadata ----
         metadata = load_scene_metadata(scene_name)
+        asset_type_capitalized = resolve_asset_type_from_metadata(metadata, asset_type, asset_id)
         object_pose, object_scale = get_object_pose_from_metadata(
             metadata,
             asset_type=asset_type_capitalized,

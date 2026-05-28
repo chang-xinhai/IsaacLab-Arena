@@ -160,6 +160,59 @@ def _format_pose_vector(values: Any) -> str:
     return "[" + ", ".join(f"{value:+.4f}" for value in values) + "]"
 
 
+def _rotation_matrix_to_quat_wxyz(rot: Any) -> Any:
+    """Convert a 3x3 rotation matrix to a normalized wxyz quaternion."""
+    import torch
+
+    m = rot.detach().float().cpu()
+    trace = float(torch.trace(m).item())
+    if trace > 0.0:
+        s = max(trace + 1.0, 1e-12) ** 0.5 * 2.0
+        quat = torch.tensor(
+            [
+                0.25 * s,
+                float((m[2, 1] - m[1, 2]).item()) / s,
+                float((m[0, 2] - m[2, 0]).item()) / s,
+                float((m[1, 0] - m[0, 1]).item()) / s,
+            ],
+            dtype=torch.float32,
+        )
+    elif float(m[0, 0].item()) > float(m[1, 1].item()) and float(m[0, 0].item()) > float(m[2, 2].item()):
+        s = max(1.0 + float(m[0, 0].item()) - float(m[1, 1].item()) - float(m[2, 2].item()), 1e-12) ** 0.5 * 2.0
+        quat = torch.tensor(
+            [
+                float((m[2, 1] - m[1, 2]).item()) / s,
+                0.25 * s,
+                float((m[0, 1] + m[1, 0]).item()) / s,
+                float((m[0, 2] + m[2, 0]).item()) / s,
+            ],
+            dtype=torch.float32,
+        )
+    elif float(m[1, 1].item()) > float(m[2, 2].item()):
+        s = max(1.0 + float(m[1, 1].item()) - float(m[0, 0].item()) - float(m[2, 2].item()), 1e-12) ** 0.5 * 2.0
+        quat = torch.tensor(
+            [
+                float((m[0, 2] - m[2, 0]).item()) / s,
+                float((m[0, 1] + m[1, 0]).item()) / s,
+                0.25 * s,
+                float((m[1, 2] + m[2, 1]).item()) / s,
+            ],
+            dtype=torch.float32,
+        )
+    else:
+        s = max(1.0 + float(m[2, 2].item()) - float(m[0, 0].item()) - float(m[1, 1].item()), 1e-12) ** 0.5 * 2.0
+        quat = torch.tensor(
+            [
+                float((m[1, 0] - m[0, 1]).item()) / s,
+                float((m[0, 2] + m[2, 0]).item()) / s,
+                float((m[1, 2] + m[2, 1]).item()) / s,
+                0.25 * s,
+            ],
+            dtype=torch.float32,
+        )
+    return quat / torch.clamp(torch.linalg.norm(quat), min=1e-9)
+
+
 class _PinocchioFkDebugger:
     """Small FK helper for comparing planned and simulated joint-space poses."""
 
@@ -274,11 +327,15 @@ def _fk_tracking_stats(fk_debugger: _PinocchioFkDebugger | None, target_row: Any
     rel_rot = target_rot.transpose(0, 1).matmul(actual_rot)
     cos_angle = torch.clamp((torch.trace(rel_rot) - 1.0) * 0.5, -1.0, 1.0)
     rot_distance = float(torch.arccos(cos_angle).item())
+    target_quat = _rotation_matrix_to_quat_wxyz(target_rot)
+    actual_quat = _rotation_matrix_to_quat_wxyz(actual_rot)
 
     return {
         "link_name": fk_debugger.link_name,
         "target_pos": target_pos,
         "actual_pos": actual_pos,
+        "target_quat": target_quat,
+        "actual_quat": actual_quat,
         "pos_error": pos_error,
         "pos_distance": pos_distance,
         "rot_distance": rot_distance,
@@ -618,6 +675,278 @@ def _annotate_all_joint_error_peaks(
         )
 
 
+def _trace_arrays(records: list[dict]) -> dict[str, Any]:
+    import numpy as np
+
+    steps = np.asarray([int(record["step"]) for record in records], dtype=np.int64)
+    targets = np.asarray([record["target"].tolist() for record in records], dtype=np.float64)
+    actuals = np.asarray([record["actual"].tolist() for record in records], dtype=np.float64)
+    abs_errors = np.abs(actuals - targets)
+    fk_target_pos = []
+    fk_actual_pos = []
+    fk_pos_gap = []
+    fk_rot_gap = []
+    for record in records:
+        fk = record.get("fk")
+        if fk is None:
+            fk_target_pos.append([float("nan")] * 3)
+            fk_actual_pos.append([float("nan")] * 3)
+            fk_pos_gap.append(float("nan"))
+            fk_rot_gap.append(float("nan"))
+        else:
+            fk_target_pos.append([float(value) for value in fk["target_pos"].detach().cpu().tolist()])
+            fk_actual_pos.append([float(value) for value in fk["actual_pos"].detach().cpu().tolist()])
+            fk_pos_gap.append(float(fk["pos_distance"]))
+            fk_rot_gap.append(float(fk["rot_distance"]))
+    return {
+        "steps": steps,
+        "targets": targets,
+        "actuals": actuals,
+        "abs_errors": abs_errors,
+        "fk_target_pos": np.asarray(fk_target_pos, dtype=np.float64),
+        "fk_actual_pos": np.asarray(fk_actual_pos, dtype=np.float64),
+        "fk_pos_gap": np.asarray(fk_pos_gap, dtype=np.float64),
+        "fk_rot_gap": np.asarray(fk_rot_gap, dtype=np.float64),
+    }
+
+
+def _safe_nanmax(values: Any) -> float:
+    import numpy as np
+
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == 0 or not np.isfinite(values).any():
+        return float("nan")
+    return float(np.nanmax(values))
+
+
+def _safe_nanlast(values: Any) -> float:
+    import numpy as np
+
+    values = np.asarray(values, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return float("nan")
+    return float(finite[-1])
+
+
+def _joint_index_groups(joint_names: list[str]) -> dict[str, list[int]]:
+    base = [index for index, name in enumerate(joint_names) if name.startswith("base_")]
+    gripper = [
+        index
+        for index, name in enumerate(joint_names)
+        if "finger" in name.lower() or "gripper" in name.lower()
+    ]
+    nongripper = [index for index in range(len(joint_names)) if index not in gripper]
+    arm = [index for index in nongripper if index not in base]
+    return {
+        "base": base,
+        "arm": arm,
+        "gripper": gripper,
+        "nongripper": nongripper,
+    }
+
+
+def _write_episode_trace_plot(
+    records: list[dict],
+    joint_names: list[str],
+    output_path: Path,
+    *,
+    gripper_only_effective_steps: int = 20,
+) -> None:
+    import numpy as np
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    arrays = _trace_arrays(records)
+    steps = arrays["steps"]
+    targets = arrays["targets"]
+    actuals = arrays["actuals"]
+    abs_errors = arrays["abs_errors"]
+    target_pos = arrays["fk_target_pos"]
+    actual_pos = arrays["fk_actual_pos"]
+    pos_gap = arrays["fk_pos_gap"]
+    rot_gap = arrays["fk_rot_gap"]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, (ax_pose, ax_joint) = plt.subplots(1, 2, figsize=(18, 7), constrained_layout=True)
+
+    colors = ("tab:blue", "tab:green", "tab:red")
+    labels = ("x", "y", "z")
+    if target_pos.shape == actual_pos.shape and np.isfinite(target_pos).any() and np.isfinite(actual_pos).any():
+        for axis, color, label in zip(range(3), colors, labels):
+            ax_pose.plot(steps, target_pos[:, axis], color=color, linewidth=1.4, label=f"target {label}")
+            ax_pose.plot(steps, actual_pos[:, axis], color=color, linestyle="--", linewidth=1.2, label=f"real {label}")
+            ax_pose.fill_between(
+                steps,
+                target_pos[:, axis],
+                actual_pos[:, axis],
+                color=color,
+                alpha=0.10,
+                linewidth=0,
+            )
+    ax_pose.axvspan(
+        steps[0],
+        min(steps[-1], steps[0] + gripper_only_effective_steps - 1),
+        color="tab:gray",
+        alpha=0.08,
+        label=f"first {gripper_only_effective_steps} steps",
+    )
+    ax_pose.set_title("EEF FK target vs real")
+    ax_pose.set_xlabel("trace step")
+    ax_pose.set_ylabel("world position (m)")
+    ax_pose.grid(True, alpha=0.25)
+    ax_pose.legend(loc="best", fontsize=8, ncol=2)
+    ax_pose.text(
+        0.01,
+        0.98,
+        f"max pos={_safe_nanmax(pos_gap):.4f} m\nmax rot={_safe_nanmax(rot_gap):.4f} rad",
+        transform=ax_pose.transAxes,
+        va="top",
+        ha="left",
+        fontsize=9,
+        bbox={"facecolor": "white", "edgecolor": "0.8", "alpha": 0.78},
+    )
+
+    for joint_index, joint_name in enumerate(joint_names):
+        ax_joint.plot(steps, abs_errors[:, joint_index], linewidth=1.0, label=joint_name)
+    ax_joint.axvspan(
+        steps[0],
+        min(steps[-1], steps[0] + gripper_only_effective_steps - 1),
+        color="tab:gray",
+        alpha=0.08,
+    )
+    ax_joint.set_title("Per-joint absolute target-real gap")
+    ax_joint.set_xlabel("trace step")
+    ax_joint.set_ylabel("absolute joint gap")
+    ax_joint.grid(True, alpha=0.25)
+    ax_joint.legend(loc="best", fontsize=8, ncol=2)
+
+    episode = records[0]["episode"]
+    traj = records[0]["traj"]
+    fig.suptitle(
+        f"episode {episode} | traj={traj} | max_pos={_safe_nanmax(pos_gap):.4f}m "
+        f"| max_joint={_safe_nanmax(abs_errors):.4f}",
+        fontsize=13,
+    )
+    fig.savefig(output_path, dpi=170)
+    plt.close(fig)
+
+
+def _write_episode_trace_artifacts(
+    records: list[dict],
+    joint_names: list[str],
+    output_dir: Path,
+    base_name: str,
+) -> tuple[Path | None, list[Path]]:
+    if not records:
+        return None, []
+
+    import csv
+    import numpy as np
+
+    by_episode: dict[tuple[int, int], list[dict]] = {}
+    for record in records:
+        by_episode.setdefault((int(record["episode"]), int(record["traj"])), []).append(record)
+
+    summary_path = _make_unique_output_path(output_dir / f"{base_name}-episode-summary.csv")
+    per_episode_dir = output_dir / f"{base_name}-episodes"
+    groups = _joint_index_groups(joint_names)
+
+    def span_max(values: Any) -> float:
+        return _safe_nanmax(np.ptp(values, axis=0)) if values.size else float("nan")
+
+    fieldnames = [
+        "episode",
+        "traj",
+        "num_steps",
+        "first20_steps",
+        "max_joint_abs_gap",
+        "max_base_abs_gap",
+        "max_arm_abs_gap",
+        "max_gripper_abs_gap",
+        "first20_max_base_abs_gap",
+        "first20_max_arm_abs_gap",
+        "first20_max_gripper_abs_gap",
+        "first20_max_nongripper_abs_gap",
+        "first20_target_base_span",
+        "first20_actual_base_span",
+        "first20_target_arm_span",
+        "first20_actual_arm_span",
+        "first20_target_gripper_span",
+        "first20_actual_gripper_span",
+        "first20_target_nongripper_span",
+        "first20_actual_nongripper_span",
+        "max_eef_pos_gap_m",
+        "final_eef_pos_gap_m",
+        "max_eef_rot_gap_rad",
+        "final_eef_rot_gap_rad",
+        "plot",
+    ]
+    plot_paths: list[Path] = []
+    with summary_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for (episode, traj), raw_episode_records in sorted(by_episode.items()):
+            episode_records = sorted(raw_episode_records, key=lambda record: int(record["step"]))
+            arrays = _trace_arrays(episode_records)
+            abs_errors = arrays["abs_errors"]
+            targets = arrays["targets"]
+            actuals = arrays["actuals"]
+            first_n = min(20, abs_errors.shape[0])
+            first_slice = slice(0, first_n)
+            nongripper = groups["nongripper"]
+            base = groups["base"]
+            arm = groups["arm"]
+            gripper = groups["gripper"]
+            first_base_abs = abs_errors[first_slice][:, base] if base else np.empty((first_n, 0))
+            first_arm_abs = abs_errors[first_slice][:, arm] if arm else np.empty((first_n, 0))
+            first_gripper_abs = abs_errors[first_slice][:, gripper] if gripper else np.empty((first_n, 0))
+            first_base_targets = targets[first_slice][:, base] if base else np.empty((first_n, 0))
+            first_base_actuals = actuals[first_slice][:, base] if base else np.empty((first_n, 0))
+            first_arm_targets = targets[first_slice][:, arm] if arm else np.empty((first_n, 0))
+            first_arm_actuals = actuals[first_slice][:, arm] if arm else np.empty((first_n, 0))
+            first_gripper_targets = targets[first_slice][:, gripper] if gripper else np.empty((first_n, 0))
+            first_gripper_actuals = actuals[first_slice][:, gripper] if gripper else np.empty((first_n, 0))
+            first_targets = targets[first_slice][:, nongripper] if nongripper else np.empty((first_n, 0))
+            first_actuals = actuals[first_slice][:, nongripper] if nongripper else np.empty((first_n, 0))
+            first_nongripper_abs = (
+                abs_errors[first_slice][:, nongripper] if nongripper else np.empty((first_n, 0))
+            )
+            plot_path = per_episode_dir / f"episode_{episode:03d}_traj_{traj:06d}_joint_eef_gap.png"
+            _write_episode_trace_plot(episode_records, joint_names, plot_path)
+            plot_paths.append(plot_path)
+            writer.writerow({
+                "episode": episode,
+                "traj": traj,
+                "num_steps": len(episode_records),
+                "first20_steps": first_n,
+                "max_joint_abs_gap": _safe_nanmax(abs_errors),
+                "max_base_abs_gap": _safe_nanmax(abs_errors[:, base]) if base else float("nan"),
+                "max_arm_abs_gap": _safe_nanmax(abs_errors[:, arm]) if arm else float("nan"),
+                "max_gripper_abs_gap": _safe_nanmax(abs_errors[:, gripper]) if gripper else float("nan"),
+                "first20_max_base_abs_gap": _safe_nanmax(first_base_abs),
+                "first20_max_arm_abs_gap": _safe_nanmax(first_arm_abs),
+                "first20_max_gripper_abs_gap": _safe_nanmax(first_gripper_abs),
+                "first20_max_nongripper_abs_gap": _safe_nanmax(first_nongripper_abs),
+                "first20_target_base_span": span_max(first_base_targets),
+                "first20_actual_base_span": span_max(first_base_actuals),
+                "first20_target_arm_span": span_max(first_arm_targets),
+                "first20_actual_arm_span": span_max(first_arm_actuals),
+                "first20_target_gripper_span": span_max(first_gripper_targets),
+                "first20_actual_gripper_span": span_max(first_gripper_actuals),
+                "first20_target_nongripper_span": span_max(first_targets),
+                "first20_actual_nongripper_span": span_max(first_actuals),
+                "max_eef_pos_gap_m": _safe_nanmax(arrays["fk_pos_gap"]),
+                "final_eef_pos_gap_m": _safe_nanlast(arrays["fk_pos_gap"]),
+                "max_eef_rot_gap_rad": _safe_nanmax(arrays["fk_rot_gap"]),
+                "final_eef_rot_gap_rad": _safe_nanlast(arrays["fk_rot_gap"]),
+                "plot": str(plot_path),
+            })
+    return summary_path, plot_paths
+
+
 def _write_joint_tracking_artifacts(
     records: list[dict],
     joint_names: list[str] | None,
@@ -636,6 +965,8 @@ def _write_joint_tracking_artifacts(
     base_name = f"{dataset_path.stem}-joint-tracking"
     csv_path = _make_unique_output_path(output_dir / f"{base_name}.csv")
     png_path = _make_unique_output_path(output_dir / f"{base_name}.png")
+    joint_values_png_path = _make_unique_output_path(output_dir / f"{base_name}-joint-values.png")
+    eef_pose_png_path = _make_unique_output_path(output_dir / f"{base_name}-eef-pose.png")
 
     joint_columns = [_safe_csv_name(name) for name in joint_names]
     fieldnames = [
@@ -650,6 +981,23 @@ def _write_joint_tracking_artifacts(
         "all_joint_mean_abs",
         "fk_eef_pos_distance_m",
         "fk_eef_rot_distance_rad",
+        "fk_eef_target_x",
+        "fk_eef_target_y",
+        "fk_eef_target_z",
+        "fk_eef_actual_x",
+        "fk_eef_actual_y",
+        "fk_eef_actual_z",
+        "fk_eef_error_x",
+        "fk_eef_error_y",
+        "fk_eef_error_z",
+        "fk_eef_target_qw",
+        "fk_eef_target_qx",
+        "fk_eef_target_qy",
+        "fk_eef_target_qz",
+        "fk_eef_actual_qw",
+        "fk_eef_actual_qx",
+        "fk_eef_actual_qy",
+        "fk_eef_actual_qz",
         "object_name",
         "object_joint_name",
         "object_joint_pos_rad",
@@ -660,7 +1008,7 @@ def _write_joint_tracking_artifacts(
         "object_open_error",
     ]
     for name in joint_columns:
-        fieldnames.extend((f"err_{name}", f"abs_{name}"))
+        fieldnames.extend((f"target_{name}", f"actual_{name}", f"err_{name}", f"abs_{name}"))
 
     plot_x = []
     base_curve = []
@@ -668,6 +1016,11 @@ def _write_joint_tracking_artifacts(
     fk_curve = []
     object_joint_curve = []
     object_target_curve = []
+    joint_target_curves = []
+    joint_actual_curves = []
+    fk_target_pos_curve = []
+    fk_actual_pos_curve = []
+    fk_rot_curve = []
     over_threshold_joints = []
 
     with csv_path.open("w", newline="") as f:
@@ -686,6 +1039,18 @@ def _write_joint_tracking_artifacts(
             fk = record.get("fk")
             fk_pos = float(fk["pos_distance"]) if fk is not None else float("nan")
             fk_rot = float(fk["rot_distance"]) if fk is not None else float("nan")
+            if fk is None:
+                fk_target_pos = [float("nan")] * 3
+                fk_actual_pos = [float("nan")] * 3
+                fk_pos_error = [float("nan")] * 3
+                fk_target_quat = [float("nan")] * 4
+                fk_actual_quat = [float("nan")] * 4
+            else:
+                fk_target_pos = [float(value) for value in fk["target_pos"].detach().cpu().tolist()]
+                fk_actual_pos = [float(value) for value in fk["actual_pos"].detach().cpu().tolist()]
+                fk_pos_error = [float(value) for value in fk["pos_error"].detach().cpu().tolist()]
+                fk_target_quat = [float(value) for value in fk["target_quat"].detach().cpu().tolist()]
+                fk_actual_quat = [float(value) for value in fk["actual_quat"].detach().cpu().tolist()]
             object_stats = record.get("object")
             if object_stats is None:
                 object_name = ""
@@ -734,6 +1099,23 @@ def _write_joint_tracking_artifacts(
                 "all_joint_mean_abs": record["mean"],
                 "fk_eef_pos_distance_m": fk_pos,
                 "fk_eef_rot_distance_rad": fk_rot,
+                "fk_eef_target_x": fk_target_pos[0],
+                "fk_eef_target_y": fk_target_pos[1],
+                "fk_eef_target_z": fk_target_pos[2],
+                "fk_eef_actual_x": fk_actual_pos[0],
+                "fk_eef_actual_y": fk_actual_pos[1],
+                "fk_eef_actual_z": fk_actual_pos[2],
+                "fk_eef_error_x": fk_pos_error[0],
+                "fk_eef_error_y": fk_pos_error[1],
+                "fk_eef_error_z": fk_pos_error[2],
+                "fk_eef_target_qw": fk_target_quat[0],
+                "fk_eef_target_qx": fk_target_quat[1],
+                "fk_eef_target_qy": fk_target_quat[2],
+                "fk_eef_target_qz": fk_target_quat[3],
+                "fk_eef_actual_qw": fk_actual_quat[0],
+                "fk_eef_actual_qx": fk_actual_quat[1],
+                "fk_eef_actual_qy": fk_actual_quat[2],
+                "fk_eef_actual_qz": fk_actual_quat[3],
                 "object_name": object_name,
                 "object_joint_name": object_joint_name,
                 "object_joint_pos_rad": object_joint_pos,
@@ -743,12 +1125,15 @@ def _write_joint_tracking_artifacts(
                 "object_target_openness": object_target_openness,
                 "object_open_error": object_open_error,
             }
-            for joint_name, column_name, err_value, abs_value in zip(
-                joint_names,
+            for column_name, target_value, actual_value, err_value, abs_value in zip(
                 joint_columns,
+                record["target"].tolist(),
+                record["actual"].tolist(),
                 error.tolist(),
                 abs_error.tolist(),
             ):
+                row[f"target_{column_name}"] = target_value
+                row[f"actual_{column_name}"] = actual_value
                 row[f"err_{column_name}"] = err_value
                 row[f"abs_{column_name}"] = abs_value
             writer.writerow(row)
@@ -759,6 +1144,11 @@ def _write_joint_tracking_artifacts(
             fk_curve.append(fk_pos)
             object_joint_curve.append(object_joint_pos)
             object_target_curve.append(object_joint_target)
+            joint_target_curves.append(record["target"].tolist())
+            joint_actual_curves.append(record["actual"].tolist())
+            fk_target_pos_curve.append(fk_target_pos)
+            fk_actual_pos_curve.append(fk_actual_pos)
+            fk_rot_curve.append(fk_rot)
             over_threshold_joints.append(
                 [
                     joint_name
@@ -818,9 +1208,104 @@ def _write_joint_tracking_artifacts(
         print(f"[JointTracking][curve] Warning: failed to write plot {png_path}: {exc}", flush=True)
         png_path = None
 
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        targets = np.asarray(joint_target_curves, dtype=np.float64)
+        actuals = np.asarray(joint_actual_curves, dtype=np.float64)
+        if targets.ndim == 2 and actuals.ndim == 2 and targets.shape == actuals.shape:
+            cols = 3
+            rows = int(np.ceil(len(joint_names) / cols))
+            fig, axes = plt.subplots(rows, cols, figsize=(15, max(3, rows * 2.4)), sharex=True, constrained_layout=True)
+            axes = np.asarray(axes).reshape(-1)
+            for joint_index, joint_name in enumerate(joint_names):
+                ax = axes[joint_index]
+                ax.plot(plot_x, targets[:, joint_index], linestyle=":", linewidth=1.0, label="target")
+                ax.plot(plot_x, actuals[:, joint_index], linewidth=1.0, label="actual")
+                ax.set_title(joint_name, fontsize=9)
+                ax.grid(True, alpha=0.25)
+            for ax in axes[len(joint_names):]:
+                ax.axis("off")
+            axes[0].legend(loc="best", fontsize=8)
+            fig.suptitle(f"Joint target vs actual: {dataset_path.stem}")
+            fig.supxlabel("recorded tracking sample")
+            fig.savefig(joint_values_png_path, dpi=180)
+            plt.close(fig)
+        else:
+            joint_values_png_path = None
+    except Exception as exc:
+        print(
+            f"[JointTracking][curve] Warning: failed to write joint-value plot {joint_values_png_path}: {exc}",
+            flush=True,
+        )
+        joint_values_png_path = None
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        target_pos = np.asarray(fk_target_pos_curve, dtype=np.float64)
+        actual_pos = np.asarray(fk_actual_pos_curve, dtype=np.float64)
+        if (
+            target_pos.ndim == 2
+            and actual_pos.ndim == 2
+            and target_pos.shape == actual_pos.shape
+            and np.isfinite(target_pos).any()
+            and np.isfinite(actual_pos).any()
+        ):
+            labels = ("x", "y", "z")
+            fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True, constrained_layout=True)
+            for axis_index, label in enumerate(labels):
+                axes[0].plot(plot_x, target_pos[:, axis_index], linestyle=":", linewidth=1.0, label=f"target {label}")
+                axes[0].plot(plot_x, actual_pos[:, axis_index], linewidth=1.0, label=f"actual {label}")
+            axes[0].set_ylabel("EEF position (m)")
+            axes[0].grid(True, alpha=0.25)
+            axes[0].legend(loc="best", ncol=3, fontsize=8)
+
+            axes[1].plot(plot_x, fk_curve, linewidth=1.2, label="position error (m)")
+            axes[1].plot(plot_x, fk_rot_curve, linewidth=1.2, label="rotation error (rad)")
+            axes[1].set_xlabel("recorded tracking sample")
+            axes[1].set_ylabel("EEF error")
+            axes[1].grid(True, alpha=0.25)
+            axes[1].legend(loc="best")
+            fig.suptitle(f"EEF FK target vs actual: {dataset_path.stem}")
+            fig.savefig(eef_pose_png_path, dpi=180)
+            plt.close(fig)
+        else:
+            eef_pose_png_path = None
+    except Exception as exc:
+        print(
+            f"[JointTracking][curve] Warning: failed to write EEF pose plot {eef_pose_png_path}: {exc}",
+            flush=True,
+        )
+        eef_pose_png_path = None
+
     print(f"[JointTracking][curve] csv={csv_path}", flush=True)
     if png_path is not None:
         print(f"[JointTracking][curve] png={png_path}", flush=True)
+    if joint_values_png_path is not None:
+        print(f"[JointTracking][curve] joint_values_png={joint_values_png_path}", flush=True)
+    if eef_pose_png_path is not None:
+        print(f"[JointTracking][curve] eef_pose_png={eef_pose_png_path}", flush=True)
+
+    episode_summary_path, episode_plot_paths = _write_episode_trace_artifacts(
+        records,
+        joint_names,
+        output_dir,
+        base_name,
+    )
+    if episode_summary_path is not None:
+        print(f"[JointTracking][curve] episode_summary_csv={episode_summary_path}", flush=True)
+        print(
+            f"[JointTracking][curve] episode_gap_plots={len(episode_plot_paths)} "
+            f"dir={output_dir / f'{base_name}-episodes'}",
+            flush=True,
+        )
     return csv_path, png_path
 
 
@@ -1102,6 +1587,7 @@ class RecordDebugHooks:
         self.episode_joint_tracking_records: list[dict] = []
         self.handle_tracking_records: list[dict[str, Any]] = []
         self.episode_handle_tracking_records: list[dict[str, Any]] = []
+        self.handle_tracking_disabled_reason: str | None = None
         self.episode_index = 0
         self.traj_index = 0
 
@@ -1249,8 +1735,13 @@ class RecordDebugHooks:
             self.joint_tracking_records.append(stats)
             self.episode_joint_tracking_records.append(stats)
 
-        if self.config.handle_tracking:
-            handle_stats = _handle_tracking_stats(env, self.openable_object, target_obj)
+        if self.config.handle_tracking and self.handle_tracking_disabled_reason is None:
+            try:
+                handle_stats = _handle_tracking_stats(env, self.openable_object, target_obj)
+            except ValueError as exc:
+                self.handle_tracking_disabled_reason = str(exc)
+                print(f"[HandleTracking] disabled: {exc}", flush=True)
+                return
             handle_stats.update(
                 {
                     "episode": self.episode_index,
