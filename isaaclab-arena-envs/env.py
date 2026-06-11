@@ -304,6 +304,7 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
     # Check for trajectory-based initial state (for evaluation)
     traj_file = config.get("traj_file", None)
     traj_seed = config.get("traj_seed", 42)
+    traj_selection_mode = config.get("traj_selection_mode", "random")
     handle_distance_threshold = config.get("handle_distance_threshold", 0.1)
     interpolation_factor = config.get("interpolated", config.get("interpolation_factor", 1))
     interpolation_type = config.get("interpolation_type", "linear")
@@ -320,6 +321,7 @@ def _create_isaaclab_env(config: dict, n_envs: int) -> dict[str, dict[int, gym.v
         state_key=state_key,
         traj_file=traj_file,
         traj_seed=traj_seed,
+        traj_selection_mode=traj_selection_mode,
         handle_distance_threshold=handle_distance_threshold,
         interpolation_factor=interpolation_factor,
         interpolation_type=interpolation_type,

@@ -52,6 +52,7 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         state_key: str = "joint_pos",
         traj_file: str | None = None,
         traj_seed: int = 42,
+        traj_selection_mode: str = "random",
         handle_distance_threshold: float = 0.1,
         interpolation_factor: int = 1,
         interpolation_type: str = "linear",
@@ -80,6 +81,13 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         self._traj_data = None
         self._traj_rng = None
         self._traj_n_episodes = 0
+        self._traj_selection_mode = str(traj_selection_mode)
+        self._traj_next_episode = 0
+        if self._traj_selection_mode not in {"random", "sequential"}:
+            raise ValueError(
+                "traj_selection_mode must be 'random' or 'sequential', "
+                f"got {self._traj_selection_mode!r}"
+            )
         if traj_file and os.path.exists(traj_file):
             data = torch.load(traj_file, map_location="cpu", weights_only=True)
             # Validate required keys
@@ -118,7 +126,8 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
                 self._traj_rng = np.random.RandomState(traj_seed)
                 logging.info(
                     f"[IsaacLabEnvWrapper] Trajectory initial states enabled: "
-                    f"{self._traj_n_episodes} episodes, seed={traj_seed}"
+                    f"{self._traj_n_episodes} episodes, seed={traj_seed}, "
+                    f"selection_mode={self._traj_selection_mode}"
                 )
         elif traj_file:
             logging.warning(
@@ -317,8 +326,12 @@ class IsaacLabEnvWrapper(gym.vector.AsyncVectorEnv):
         Returns:
             Recomputed observation dict reflecting the new initial state.
         """
-        # Sample a random episode index (reproducible via seeded RNG)
-        ep_idx = self._traj_rng.randint(0, self._traj_n_episodes)
+        if self._traj_selection_mode == "sequential":
+            ep_idx = self._traj_next_episode % self._traj_n_episodes
+            self._traj_next_episode += 1
+        else:
+            # Sample a random episode index (reproducible via seeded RNG)
+            ep_idx = self._traj_rng.randint(0, self._traj_n_episodes)
         start_robot = self._traj_data["start_robot"][ep_idx]
         start_obj = self._traj_data["start_obj"][ep_idx]
 
